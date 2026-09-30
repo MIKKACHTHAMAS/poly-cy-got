@@ -50,8 +50,10 @@ async def chat(request: ChatRequest):
     level = request.explanation_level
     
     if prefs:
-        language = prefs.get("preferred_language", language)
-        level = prefs.get("explanation_level", level)
+        if language == "auto":
+            language = prefs.get("preferred_language", language)
+        if level == "simple" or level is None:
+            level = prefs.get("explanation_level", level)
     
     result = await process_message(
         message=request.message,

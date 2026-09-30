@@ -1,0 +1,15 @@
+# Environment variables — CRITICAL
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+venv/
+*.pyc
+polycygot.db
+
+# Node
+node_modules/
+dist/
+.vite/

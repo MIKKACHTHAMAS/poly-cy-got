@@ -1,6 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import {
+  Shield, Send, Globe, Brain, Trash2, Copy, Check,
+  ChevronDown, ChevronUp, AlertTriangle, Sparkles, X
+} from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000";
+
+const EXAMPLE_PROMPTS = [
+  { icon: "🏦", label: "Suspicious bank SMS", text: "My bank says my account will be blocked. It has a link." },
+  { icon: "📱", label: "OTP request received", text: "My bank is asking for my OTP. Should I share it?" },
+  { icon: "🔗", label: "Unknown link clicked", text: "I clicked a link in a message. Am I safe?" },
+  { icon: "வங்கி", label: "சந்தேகத்திற்குரிய SMS", text: "வங்கியிலிருந்து சந்தேகத்திற்குரிய SMS வந்தது. அதில் ஒரு லிங்க் இருக்கு." },
+  { icon: "OTP", label: "OTP கேட்கும் மெசேஜ்", text: "என் வங்கி OTP கேட்கிறது. நான் பகிர வேண்டுமா?" },
+];
 
 export default function App() {
   const [message, setMessage] = useState("");
@@ -8,11 +20,22 @@ export default function App() {
   const [level, setLevel] = useState("simple");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [sessionId] = useState(() => "user_" + Math.random().toString(36).slice(2, 10));
   const [memoryConsent, setMemoryConsent] = useState(false);
   const [memoryStatus, setMemoryStatus] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [expandedVerification, setExpandedVerification] = useState({});
+  const [copiedIndex, setCopiedIndex] = useState(null);
+  const messagesEndRef = useRef(null);
 
-  // Load memory on mount
+  const [sessionId] = useState(() => {
+    let id = localStorage.getItem("polycygot_session_id");
+    if (!id) {
+      id = "user_" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem("polycygot_session_id", id);
+    }
+    return id;
+  });
+
   useEffect(() => {
     fetch(`${API_URL}/memory/${sessionId}`)
       .then(r => r.json())
@@ -27,11 +50,15 @@ export default function App() {
       .catch(() => {});
   }, [sessionId]);
 
-  async function sendMessage() {
-    if (!message.trim() || loading) return;
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
 
-    const userMessage = message;
-    setMessages(prev => [...prev, { role: "user", text: userMessage }]);
+  async function sendMessage(customText) {
+    const text = (customText ?? message).trim();
+    if (!text || loading) return;
+
+    setMessages(prev => [...prev, { role: "user", text }]);
     setMessage("");
     setLoading(true);
 
@@ -40,12 +67,12 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: userMessage,
+          message: text,
           language,
           explanation_level: level,
           session_id: sessionId,
-          memory_consent: memoryConsent
-        })
+          memory_consent: memoryConsent,
+        }),
       });
 
       if (!response.ok) throw new Error("Request failed");
@@ -55,16 +82,34 @@ export default function App() {
         role: "assistant",
         text: data.reply,
         indicators: data.risk_indicators,
-        detectedLang: data.detected_language
+        verification: data.verification,
+        detectedLang: data.detected_language,
+        needsFollowup: data.needs_followup,
       }]);
-    } catch (error) {
+    } catch {
       setMessages(prev => [...prev, {
         role: "assistant",
-        text: "Unable to connect. Please try again."
+        text: "Unable to connect. Please check the backend is running.",
       }]);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function savePreferences() {
+    await fetch(`${API_URL}/memory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: sessionId,
+        preferred_language: language === "auto" ? "en-IN" : language,
+        explanation_level: level,
+        memory_consent: true,
+      }),
+    });
+    const r = await fetch(`${API_URL}/memory/${sessionId}`);
+    const data = await r.json();
+    setMemoryStatus(data.preferences);
   }
 
   async function clearMemory() {
@@ -73,98 +118,414 @@ export default function App() {
     setMemoryConsent(false);
   }
 
+  function copyToClipboard(text, index) {
+    navigator.clipboard.writeText(text);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 1500);
+  }
+
+  function toggleVerification(index) {
+    setExpandedVerification(prev => ({ ...prev, [index]: !prev[index] }));
+  }
+
+  const riskStyle = (risk) =>
+    risk === "high"
+      ? "bg-red-950/60 text-red-300 border-red-800"
+      : risk === "medium"
+      ? "bg-amber-950/60 text-amber-300 border-amber-800"
+      : "bg-slate-800 text-slate-300 border-slate-700";
+
+  const statusStyle = (status) =>
+    status === "passed"
+      ? "bg-green-950/60 text-green-300 border-green-800"
+      : status === "needs_review"
+      ? "bg-red-950/60 text-red-300 border-red-800"
+      : "bg-slate-800 text-slate-300 border-slate-700";
+
+  const langLabel = (code) =>
+    code === "ta-IN" ? "Tamil" : code === "en-IN" ? "English" : code || "—";
+
   return (
-    <main className="min-h-screen bg-slate-950 text-white p-5">
-      <h1 className="text-3xl font-bold">🛡️ PolyCyGot</h1>
-      <p className="text-slate-400">Adaptive multilingual cybersecurity agent</p>
-
-      {/* Controls */}
-      <div className="my-5 flex flex-wrap gap-3 items-center">
-        <select
-          value={language}
-          onChange={e => setLanguage(e.target.value)}
-          className="bg-slate-800 p-2 rounded"
-        >
-          <option value="auto">Auto-detect</option>
-          <option value="en-IN">English</option>
-          <option value="ta-IN">Tamil</option>
-        </select>
-
-        <select
-          value={level}
-          onChange={e => setLevel(e.target.value)}
-          className="bg-slate-800 p-2 rounded"
-        >
-          <option value="simple">Beginner</option>
-          <option value="technical">Technical</option>
-        </select>
-
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={memoryConsent}
-            onChange={e => setMemoryConsent(e.target.checked)}
-          />
-          Save preferences
-        </label>
-
-        {memoryStatus && (
-          <button
-            onClick={clearMemory}
-            className="bg-red-800 px-3 py-1 rounded text-sm"
-          >
-            Clear memory
-          </button>
-        )}
-      </div>
-
-      {/* Memory indicator */}
-      {memoryStatus && (
-        <div className="bg-teal-900/50 p-2 rounded mb-3 text-sm">
-          Memory active: {memoryStatus.preferred_language}, {memoryStatus.explanation_level}
-        </div>
-      )}
-
-      {/* Messages */}
-      <section className="space-y-3 mb-5">
-        {messages.map((item, index) => (
-          <div key={index} className="bg-slate-800 p-4 rounded-xl">
-            <div className="flex justify-between">
-              <b>{item.role === "user" ? "You" : "PolyCyGot"}</b>
-              {item.detectedLang && (
-                <span className="text-xs text-slate-500">
-                  detected: {item.detectedLang}
-                </span>
-              )}
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {/* Header */}
+      <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-20">
+        <div className="px-4 md:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-teal-600/20 border border-teal-700 flex items-center justify-center">
+              <Shield className="w-5 h-5 text-teal-400" />
             </div>
-            <p className="mt-2 whitespace-pre-wrap">{item.text}</p>
-            {item.indicators?.length > 0 && (
-              <div className="mt-2 text-xs text-amber-400">
-                ⚠️ {item.indicators.map(i => i.indicator).join(" | ")}
+            <div>
+              <h1 className="font-bold text-lg leading-tight">PolyCyGot</h1>
+              <p className="text-xs text-slate-400 leading-tight">
+                Adaptive multilingual cybersecurity agent
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-2 text-xs bg-slate-800 border border-slate-700 rounded-full px-3 py-1">
+              <Globe className="w-3 h-3 text-teal-400" />
+              <span>
+                {memoryStatus
+                  ? `${langLabel(memoryStatus.preferred_language)} active`
+                  : language === "auto"
+                  ? "Auto-detect"
+                  : langLabel(language)}
+              </span>
+            </div>
+            <button
+              onClick={() => setSidebarOpen(o => !o)}
+              className="md:hidden bg-slate-800 border border-slate-700 rounded-lg p-2"
+            >
+              {sidebarOpen ? <X className="w-4 h-4" /> : <Brain className="w-4 h-4" />}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* Sidebar */}
+        <aside
+          className={`${
+            sidebarOpen ? "block" : "hidden"
+          } md:block md:w-72 border-b md:border-b-0 md:border-r border-slate-800 bg-slate-900/40 p-4 space-y-5 md:h-[calc(100vh-61px)] md:overflow-y-auto`}
+        >
+          <Section title="Language">
+            <select
+              value={language}
+              onChange={e => setLanguage(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm"
+            >
+              <option value="auto">Auto-detect</option>
+              <option value="en-IN">English</option>
+              <option value="ta-IN">Tamil</option>
+            </select>
+          </Section>
+
+          <Section title="Explanation level">
+            <div className="grid grid-cols-2 gap-2">
+              {["simple", "technical"].map(lv => (
+                <button
+                  key={lv}
+                  onClick={() => setLevel(lv)}
+                  className={`text-xs py-2 rounded-lg border ${
+                    level === lv
+                      ? "bg-teal-600/20 border-teal-600 text-teal-300"
+                      : "bg-slate-800 border-slate-700 text-slate-300"
+                  }`}
+                >
+                  {lv === "simple" ? "Beginner" : "Technical"}
+                </button>
+              ))}
+            </div>
+          </Section>
+
+          <Section title="Memory & privacy">
+            <label className="flex items-start gap-2 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                checked={memoryConsent}
+                onChange={e => {
+                  setMemoryConsent(e.target.checked);
+                  if (e.target.checked) savePreferences();
+                  else clearMemory();
+                }}
+                className="mt-0.5"
+              />
+              <span>Remember my preferences</span>
+            </label>
+            {memoryStatus && (
+              <div className="mt-2 bg-teal-950/40 border border-teal-800 rounded-lg p-2 text-xs space-y-1">
+                <div className="flex items-center gap-1 text-teal-300">
+                  <Brain className="w-3 h-3" /> Memory active
+                </div>
+                <div className="text-slate-300">
+                  Language: <b>{langLabel(memoryStatus.preferred_language)}</b>
+                </div>
+                <div className="text-slate-300">
+                  Level: <b>{memoryStatus.explanation_level}</b>
+                </div>
+                <button
+                  onClick={clearMemory}
+                  className="mt-1 flex items-center gap-1 text-red-400 hover:text-red-300"
+                >
+                  <Trash2 className="w-3 h-3" /> Clear
+                </button>
+              </div>
+            )}
+          </Section>
+
+          <Section title="Example questions">
+            <div className="space-y-2">
+              {EXAMPLE_PROMPTS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    setMessage(p.text);
+                    setSidebarOpen(false);
+                  }}
+                  className="w-full text-left text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-2 transition"
+                >
+                  <span className="mr-1">{p.icon}</span>
+                  <span className={/[\u0B80-\u0BFF]/.test(p.label) ? "tamil" : ""}>
+                    {p.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </Section>
+
+          <Section title="About">
+            <p className="text-xs text-slate-400 leading-relaxed">
+              PolyCyGot reasons across languages, remembers your preferences,
+              and verifies its own advice before showing it. Built for the
+              Omega AI Agents — Agent Without Borders track.
+            </p>
+          </Section>
+        </aside>
+
+        {/* Chat area */}
+        <main className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto p-4 md:p-6">
+            <div className="max-w-3xl mx-auto space-y-4">
+              {messages.length === 0 && !loading && (
+                <EmptyState
+                  onSelect={(text) => {
+                    setMessage(text);
+                    setTimeout(() => sendMessage(text), 0);
+                  }}
+                />
+              )}
+
+              {messages.map((item, index) => (
+                <div key={index} className="fade-in">
+                  {item.role === "user" ? (
+                    <UserBubble text={item.text} />
+                  ) : (
+                    <AgentBubble
+                      item={item}
+                      index={index}
+                      onCopy={() => copyToClipboard(item.text, index)}
+                      copied={copiedIndex === index}
+                      expanded={!!expandedVerification[index]}
+                      onToggle={() => toggleVerification(index)}
+                      riskStyle={riskStyle}
+                      statusStyle={statusStyle}
+                      langLabel={langLabel}
+                    />
+                  )}
+                </div>
+              ))}
+
+              {loading && <TypingIndicator />}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+
+          {/* Input */}
+          <div className="border-t border-slate-800 bg-slate-900/60 backdrop-blur p-3 md:p-4">
+            <div className="max-w-3xl mx-auto flex gap-2">
+              <input
+                value={message}
+                onChange={e => setMessage(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                  }
+                }}
+                placeholder="Ask a cybersecurity question (English or Tamil)..."
+                className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-teal-600 text-sm"
+              />
+              <button
+                onClick={() => sendMessage()}
+                disabled={loading || !message.trim()}
+                className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed px-4 md:px-5 rounded-xl flex items-center gap-2 font-semibold text-sm"
+              >
+                <Send className="w-4 h-4" />
+                <span className="hidden md:inline">Send</span>
+              </button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wider text-slate-500 mb-2">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function UserBubble({ text }) {
+  return (
+    <div className="flex justify-end">
+      <div
+        className={`max-w-[85%] md:max-w-[75%] bg-teal-700/30 border border-teal-800 rounded-2xl rounded-tr-sm px-4 py-3 ${
+          /[\u0B80-\u0BFF]/.test(text) ? "tamil" : ""
+        }`}
+      >
+        <div className="text-xs text-teal-400 font-semibold mb-1">You</div>
+        <p className="whitespace-pre-wrap text-sm">{text}</p>
+      </div>
+    </div>
+  );
+}
+
+function AgentBubble({
+  item, index, onCopy, copied, expanded, onToggle,
+  riskStyle, statusStyle, langLabel,
+}) {
+  const isTamil = /[\u0B80-\u0BFF]/.test(item.text);
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[90%] md:max-w-[85%] bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 space-y-3 w-full md:w-auto">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-teal-400" />
+            <span className="font-semibold text-sm">PolyCyGot</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {item.detectedLang && (
+              <span className="text-xs bg-slate-800 border border-slate-700 rounded-full px-2 py-0.5 flex items-center gap-1">
+                <Globe className="w-3 h-3 text-teal-400" />
+                {item.detectedLang}
+              </span>
+            )}
+            <button
+              onClick={onCopy}
+              className="text-slate-500 hover:text-slate-300"
+              title="Copy reply"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+        </div>
+
+        <p className={`whitespace-pre-wrap text-sm ${isTamil ? "tamil" : ""}`}>
+          {item.text}
+        </p>
+
+        {item.indicators?.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {item.indicators.map((ind, i) => (
+              <span
+                key={i}
+                className={`text-xs px-2 py-1 rounded-md border flex items-center gap-1 ${riskStyle(ind.risk)}`}
+              >
+                <AlertTriangle className="w-3 h-3" />
+                {ind.indicator} · {ind.risk}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {item.verification && (
+          <div className="border-t border-slate-800 pt-2">
+            <button
+              onClick={onToggle}
+              className="w-full flex items-center justify-between text-xs text-slate-400 hover:text-slate-200"
+            >
+              <div className="flex items-center gap-2">
+                <span>Verification</span>
+                <span className={`px-2 py-0.5 rounded-full border font-semibold ${statusStyle(item.verification.status)}`}>
+                  {item.verification.status}
+                </span>
+              </div>
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+
+            {expanded && (
+              <ul className="mt-2 space-y-1 text-xs">
+                {item.verification.checks?.map((check, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    {check.passed ? (
+                      <Check className="w-3.5 h-3.5 text-green-400 mt-0.5 shrink-0" />
+                    ) : (
+                      <X className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
+                    )}
+                    <span className={check.passed ? "text-slate-300" : "text-red-300"}>
+                      {check.rule}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {item.verification.blocked_phrases?.length > 0 && (
+              <div className="mt-2 text-xs bg-red-950/60 border border-red-800 rounded-md p-2 text-red-300">
+                🚫 Blocked unsafe phrases: <b>{item.verification.blocked_phrases.join(", ")}</b>
               </div>
             )}
           </div>
-        ))}
-        {loading && <p className="text-slate-400">PolyCyGot is thinking...</p>}
-      </section>
+        )}
 
-      {/* Input */}
-      <div className="flex gap-2">
-        <input
-          value={message}
-          onChange={e => setMessage(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && sendMessage()}
-          placeholder="Ask a cybersecurity question..."
-          className="flex-1 bg-slate-800 p-3 rounded-xl"
-        />
-        <button
-          onClick={sendMessage}
-          disabled={loading}
-          className="bg-teal-600 px-5 rounded-xl disabled:opacity-50"
-        >
-          Send
-        </button>
+        {item.needsFollowup && (
+          <div className="text-xs text-blue-300 flex items-center gap-1">
+            💬 Agent is asking for more details.
+          </div>
+        )}
       </div>
-    </main>
+    </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div className="flex justify-start">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
+        <Shield className="w-4 h-4 text-teal-400" />
+        <span className="text-sm text-slate-400">PolyCyGot is reasoning</span>
+        <div className="flex gap-1 ml-1">
+          <span className="typing-dot w-1.5 h-1.5 rounded-full bg-teal-400 inline-block" />
+          <span className="typing-dot w-1.5 h-1.5 rounded-full bg-teal-400 inline-block" />
+          <span className="typing-dot w-1.5 h-1.5 rounded-full bg-teal-400 inline-block" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ onSelect }) {
+  return (
+    <div className="text-center py-10 md:py-16">
+      <div className="w-16 h-16 mx-auto rounded-2xl bg-teal-600/20 border border-teal-700 flex items-center justify-center mb-4">
+        <Shield className="w-8 h-8 text-teal-400" />
+      </div>
+      <h2 className="text-xl md:text-2xl font-bold">Ask PolyCyGot about anything suspicious</h2>
+      <p className="text-slate-400 text-sm mt-2 max-w-md mx-auto">
+        In English or Tamil. About a suspicious SMS, an OTP request, a link,
+        or general cybersecurity questions.
+      </p>
+
+      <div className="grid md:grid-cols-2 gap-3 max-w-2xl mx-auto mt-8">
+        {EXAMPLE_PROMPTS.slice(0, 4).map((p, i) => (
+          <button
+            key={i}
+            onClick={() => onSelect(p.text)}
+            className="text-left bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-teal-800 rounded-xl p-3 transition"
+          >
+            <div className="text-2xl mb-1">{p.icon}</div>
+            <div className={`text-sm font-semibold ${/[\u0B80-\u0BFF]/.test(p.label) ? "tamil" : ""}`}>
+              {p.label}
+            </div>
+            <div className={`text-xs text-slate-400 mt-1 line-clamp-2 ${/[\u0B80-\u0BFF]/.test(p.text) ? "tamil" : ""}`}>
+              {p.text}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mt-8">
+        <Sparkles className="w-3 h-3" />
+        Memory, verification, and Tamil support are all live.
+      </div>
+    </div>
   );
 }

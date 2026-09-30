@@ -23,7 +23,7 @@ def get_preferences(user_id: str) -> dict:
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT * FROM user_preferences WHERE user_id = ? AND memory_consent = TRUE",
+        "SELECT * FROM user_preferences WHERE user_id = ? AND memory_consent = 1",
         (user_id,)
     )
     row = cursor.fetchone()
