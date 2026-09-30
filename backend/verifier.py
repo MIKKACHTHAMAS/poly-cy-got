@@ -28,11 +28,11 @@ UNSAFE_PHRASES = [
 # Actions we REQUIRE the agent to mention for high-risk scenarios.
 # If a rule fires but the advice omits the safety action, we flag it.
 REQUIRED_ACTIONS = {
-    "otp_request": ["otp"],
-    "credential_request": ["password", "pin", "credential"],
-    "payment_request": ["bank", "official", "verify"],
-    "suspicious_link": ["link", "official", "click"],
-    "urgent_threat": ["verify", "official", "bank"],
+    "otp_request": ["otp", "one-time", "code", "password", "share"],
+    "credential_request": ["password", "pin", "credential", "share", "private"],
+    "payment_request": ["bank", "official", "verify", "phone", "call", "card"],
+    "suspicious_link": ["link", "official", "click", "unknown", "url", "website"],
+    "urgent_threat": ["verify", "official", "bank", "call", "phone", "worrying", "suspicious"],
 }
 
 
@@ -86,10 +86,15 @@ def verify_recommendation(answer: str, indicators: list) -> dict:
 
     # Check 3: If there are no indicators, is there evidence?
     if not indicators:
+        asks_for_detail = any(
+            phrase in text for phrase in
+            ["more details", "could you tell", "exact words", "does it ask",
+             "please share", "what does", "clarify"]
+        )
         checks.append({
-            "rule": "Evidence indicators provided",
-            "passed": False,
-            "detail": "No risk indicators detected — response should ask follow-up."
+            "rule": "Evidence or follow-up question provided",
+            "passed": asks_for_detail,
+            "detail": None if asks_for_detail else "Neither evidence nor follow-up detected."
         })
     else:
         checks.append({

@@ -1,58 +1,8 @@
-from language_layer import detect_language, translate_text
+from language_layer import detect_language, translate_text, generate_reply
 from verifier import verify_recommendation
 
-# Symbolic cybersecurity rules (MeTTa-inspired)
 RISK_RULES = [
-    {
-        "id": "otp_request",
-        "keywords": ["otp", "one time password", "verification code", "passcode"],
-        "indicator": "Message asks for OTP",
-        "risk": "high",
-        "action": "Never share OTP with anyone. Banks never ask for OTP."
-    },
-    {
-        "id": "urgent_threat",
-        "keywords": [
-            "suspend", "suspended", "block", "blocked",
-            "deactivat", "clos", "urgent", "immediately",
-            "within 24", "expire", "expired", "last warning",
-            "final notice", "action required"
-        ],
-        "indicator": "Urgent threat creating pressure",
-        "risk": "medium",
-        "action": "Scammers create urgency to bypass your judgment."
-    },
-    {
-        "id": "suspicious_link",
-        "keywords": [
-            "click here", "click the link", "link", "verify now",
-            "update account", "confirm your", "log in", "login",
-            "http://", "https://", "bit.ly", "tinyurl"
-        ],
-        "indicator": "Unexpected link in message",
-        "risk": "medium",
-        "action": "Don't click links. Go to the official app or website directly."
-    },
-    {
-        "id": "credential_request",
-        "keywords": [
-            "password", "pin", "cvv", "card number",
-            "aadhaar", "pan number", "account number"
-        ],
-        "indicator": "Message asks for credentials",
-        "risk": "high",
-        "action": "Legitimate banks never ask for passwords, PINs, or card details via SMS."
-    },
-    {
-        "id": "payment_request",
-        "keywords": [
-            "pay", "payment", "transfer", "fee", "charge",
-            "refund", "cashback", "reward"
-        ],
-        "indicator": "Request involving money",
-        "risk": "high",
-        "action": "Legitimate banks don't demand immediate payment via message."
-    }
+    # ... keep your existing RISK_RULES list here ...
 ]
 
 
@@ -72,7 +22,7 @@ async def process_message(
     else:
         working_text = message
 
-    # 3. Apply symbolic rules
+    # 3. Apply symbolic rules (unchanged)
     text_lower = working_text.lower()
     indicators = []
     actions = []
@@ -96,49 +46,39 @@ async def process_message(
         and any(word in text_lower for word in ["message", "sms", "email", "link", "bank"])
     )
 
-    # 5. Build English response
-    if indicators:
-        # UNCOMMENT THE NEXT LINE ONLY DURING YOUR DEMO VIDEO
-        # TO PROVE THE VERIFIER BLOCKS UNSAFE ADVICE:
-        # english_reply = "Please share your OTP to verify your account immediately."
-        risk_summary = ", ".join([i["indicator"] for i in indicators])
-        english_reply = (
-            f"I found {len(indicators)} risk indicator(s): {risk_summary}. "
-            f"What you should do: " + " ".join(actions) +
-            " If you're unsure, verify directly through your bank's official app or phone number."
-        )
-    elif needs_followup:
-        english_reply = (
-            "I need more details to assess this. "
-            "What exactly does the message say? "
-            "Does it ask for OTP, password, payment, or ask you to click a link?"
-        )
-    elif any(word in text_lower for word in [
-        "how", "what is", "what are", "explain", "guide", "enable", "setup",
-        "install", "update", "password manager", "vpn", "2fa", "two factor",
-        "two-factor", "authenticator", "backup"
-    ]):
-        # General cybersecurity question, not a threat report
-        english_reply = (
-            "That's a good cybersecurity question. "
-            "Here are the general best practices: "
-            "1) Enable two-factor authentication wherever possible. "
-            "2) Use a password manager to generate unique passwords. "
-            "3) Keep your apps and OS updated. "
-            "4) Never reuse passwords across sites. "
-            "For a specific setup, check the official help pages for that service."
-        )
-    else:
-        english_reply = (
-            "I don't see clear risk indicators in what you described. "
-            "Can you share more details, or ask a specific cybersecurity question?"
-        )
+    # 5. Generate reply with LLM (NEW)
+    english_reply = await generate_reply(
+        user_message=working_text,
+        indicators=[i["indicator"] for i in indicators],
+        actions=actions,
+        explanation_level=explanation_level,
+        is_followup=needs_followup
+    )
+    print(f"[DEBUG] LLM returned: {english_reply!r}")
+    # 6. Fallback if LLM fails (keeps agent working)
+    if not english_reply:
+        if indicators:
+            risk_summary = ", ".join([i["indicator"] for i in indicators])
+            english_reply = (
+                f"I found {len(indicators)} risk indicator(s): {risk_summary}. "
+                f"What you should do: " + " ".join(actions) +
+                " Verify directly through your bank's official app or phone number."
+            )
+        elif needs_followup:
+            english_reply = (
+                "I need more details. What exactly does the message say? "
+                "Does it ask for OTP, password, payment, or ask you to click a link?"
+            )
+        else:
+            english_reply = (
+                "I don't see clear risk indicators. Can you share more details?"
+            )
 
-    # 6. Verify the advice BEFORE translating back
+    # 7. Verify the LLM's advice before showing it to the user
     verification = verify_recommendation(english_reply, indicators)
 
-    # If verification failed, substitute a safe fallback
     if verification["status"] == "needs_review":
+        # LLM tried to say something unsafe — override with safe fallback
         english_reply = (
             "I can't safely assess this message without more information. "
             "Do not share OTP, passwords, or click unknown links. "
@@ -146,7 +86,7 @@ async def process_message(
         )
         verification = verify_recommendation(english_reply, indicators)
 
-    # 7. Translate back to user's language
+    # 8. Translate back to user's language
     if user_lang == "ta-IN":
         final_reply = await translate_text(english_reply, "en-IN", "ta-IN")
     else:
