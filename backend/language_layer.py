@@ -15,16 +15,25 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ---------- Sarvam: language detection ----------
 
 async def detect_language(text: str) -> str:
-    """Detect language code (en-IN or ta-IN) using Sarvam API."""
+    """Detect language code using Sarvam, with short-input fallback."""
+    stripped = text.strip()
+
+    # Short English-looking input: skip Sarvam to avoid misclassification
+    if len(stripped) < 10 and stripped.isascii():
+        return "en-IN"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{SARVAM_BASE}/text-lid",
-            json={"input": text},
-            headers={"api-subscription-key": SARVAM_API_KEY}
-        )
-        if resp.status_code != 200:
+        try:
+            resp = await client.post(
+                f"{SARVAM_BASE}/text-lid",
+                json={"input": text},
+                headers={"api-subscription-key": SARVAM_API_KEY}
+            )
+            if resp.status_code != 200:
+                return "en-IN"
+            return resp.json().get("language_code", "en-IN")
+        except Exception:
             return "en-IN"
-        return resp.json().get("language_code", "en-IN")
 
 
 # ---------- Sarvam: translation ----------
@@ -35,31 +44,31 @@ async def translate_text(text: str, source: str, target: str) -> str:
         return text
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{SARVAM_BASE}/translate",
-            json={
-                "input": text,
-                "source_language_code": source,
-                "target_language_code": target,
-                "mode": "formal"
-            },
-            headers={"api-subscription-key": SARVAM_API_KEY}
-        )
-        if resp.status_code != 200:
+        try:
+            resp = await client.post(
+                f"{SARVAM_BASE}/translate",
+                json={
+                    "input": text,
+                    "source_language_code": source,
+                    "target_language_code": target,
+                    "mode": "formal"
+                },
+                headers={"api-subscription-key": SARVAM_API_KEY}
+            )
+            if resp.status_code != 200:
+                return text
+            return resp.json().get("translated_text", text)
+        except Exception:
             return text
-        return resp.json().get("translated_text", text)
 
 
 # ---------- Gemini: natural-language reasoning ----------
 
 async def generate_reply(
     user_message: str,
-    indicators: list,
-    actions: list,
     explanation_level: str = "simple",
-    is_followup: bool = False
 ) -> str:
-    """Use Gemini to generate a natural cybersecurity reply."""
+    """Let Gemini decide everything — threat analysis, education, greetings."""
     if not gemini_client:
         print("[GEMINI] Client not initialized — key missing")
         return None
@@ -67,7 +76,7 @@ async def generate_reply(
     if explanation_level == "simple":
         tone = (
             "Use simple, everyday language. Avoid technical jargon. "
-            "Assume the user is not tech-savvy."
+            "Assume the user is not tech-savvy. Use relatable analogies."
         )
     else:
         tone = (
@@ -75,37 +84,24 @@ async def generate_reply(
             "Assume the user has some technical knowledge."
         )
 
-    if indicators:
-        context = (
-            f"The user asked about a suspicious message.\n"
-            f"Risk indicators detected by our rule engine: {indicators}\n"
-            f"Required safety actions: {actions}\n"
-            f"Explain these risks and actions naturally. Do not add new advice."
-        )
-    elif is_followup:
-        context = (
-            "The user described something vague. Ask 2-3 specific clarifying "
-            "questions: what does the message say, does it ask for OTP/password/"
-            "payment, does it ask to click a link."
-        )
-    else:
-        context = (
-            "The user asked a general cybersecurity question. "
-            "Provide helpful general guidance."
-        )
+    prompt = f"""You are PolyCyGot, an adaptive multilingual cybersecurity assistant.
 
-    prompt = f"""You are PolyCyGot, a multilingual cybersecurity assistant helping users identify phishing and scams.
+Your job is to help users with anything cybersecurity-related:
+- If they describe a suspicious message, analyze the risks and advise them.
+- If they ask "what is X?" (phishing, MFA, OTP, ransomware, etc.), explain it clearly with a relatable analogy.
+- If they ask a general question, give helpful best practices.
+- If they greet you, respond warmly and offer to help.
+- If they're vague, ask 2-3 clarifying questions.
 
-{tone}
+Tone: {tone}
 
-{context}
+Hard safety rules (never break these):
+- Never tell the user to share an OTP, password, PIN, CVV, or Aadhaar number.
+- Never tell the user to click a link from an unknown sender.
+- Always recommend verifying through the sender's official app, website, or phone number.
+- If unsure, err on the side of caution.
 
-Rules:
-- Keep the reply under 5 sentences.
-- Never tell the user to share OTP, passwords, or click unknown links.
-- Always recommend verifying through official channels.
-- Do not make up facts about specific banks or companies.
-- Speak directly to the user, in second person.
+Keep replies under 6 sentences. Speak directly to the user in second person.
 
 User message: {user_message}
 """
