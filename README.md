@@ -2,6 +2,9 @@
 
 **An adaptive multilingual cybersecurity agent for the next billion users.**
 
+🌐 **Live App**: [https://polycygot.pages.dev](https://polycygot.pages.dev)
+📊 **API Docs**: [https://polycygot-backend.onrender.com/docs](https://polycygot-backend.onrender.com/docs)
+
 PolyCyGot helps users identify phishing, scam messages, and suspicious digital communications — in their own language, at their own literacy level, through text, voice, or a screenshot. It reasons across languages instead of translating a generic chatbot's output, and every reply is verified for safety before it reaches the user.
 
 Built for the **Omega AI Agents — The Agent Without Borders** track.
@@ -11,13 +14,14 @@ Built for the **Omega AI Agents — The Agent Without Borders** track.
 ## Table of Contents
 
 - [Why PolyCyGot](#why-polycygot)
+- [Live Demo](#live-demo)
 - [Features](#features)
 - [Architecture](#architecture)
 - [How It Works](#how-it-works)
-- [Demo](#demo)
 - [Screenshots](#screenshots)
 - [Tech Stack](#tech-stack)
 - [Local Setup](#local-setup)
+- [Deployment](#deployment)
 - [API Reference](#api-reference)
 - [Test Results](#test-results)
 - [Security & Privacy](#security--privacy)
@@ -37,6 +41,20 @@ Built for the **Omega AI Agents — The Agent Without Borders** track.
 - Low-literacy users need simpler, more visual explanations — not a longer paragraph.
 
 PolyCyGot solves this by **reasoning across languages**, not just translating. It detects what language the user is using (including Tamil–English code-mixing), understands the cybersecurity concern, applies an explicit safety knowledge base, verifies the advice, and replies in the user's language at their preferred level of detail.
+
+---
+
+## Live Demo
+
+| Resource | URL |
+|---|---|
+| **Live App** | https://polycygot.pages.dev |
+| **Backend API** | https://polycygot-backend.onrender.com |
+| **API Docs** | https://polycygot-backend.onrender.com/docs |
+| **Video Demo** | _[add after recording]_ |
+| **Source Code** | https://github.com/MIKKACHTHAMAS/poly-cy-got |
+
+The backend is kept awake with UptimeRobot pinging every 5 minutes, so it responds instantly when you visit.
 
 ---
 
@@ -92,15 +110,15 @@ PolyCyGot solves this by **reasoning across languages**, not just translating. I
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  React Frontend                                             │
+│  React Frontend (Cloudflare Pages)                          │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
 │  │  Chat UI     │  │  Voice I/O   │  │  Image Upload    │   │
 │  └──────────────┘  └──────────────┘  └──────────────────┘   │
 │  Language selector · Level toggle · Chat history (localStorage) │
 └──────────────────────────┬──────────────────────────────────┘
-                           │ HTTP / JSON / multipart
+                           │ HTTPS / JSON / multipart
 ┌──────────────────────────▼──────────────────────────────────┐
-│  FastAPI Backend                                            │
+│  FastAPI Backend (Render)                                   │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  Sarvam AI                                           │   │
 │  │  · Language detection (Tamil / English / Tanglish)   │   │
@@ -143,15 +161,9 @@ If verification fails, the agent substitutes a safe fallback and flags it transp
 
 ---
 
-## Demo
-
-🎥 **Demo video:** _[add your 3-minute YouTube/Drive link here]_
-
-🌐 **Live demo:** _[add deployment URL if deployed]_
-
----
-
 ## Screenshots
+
+> Screenshots are stored in `docs/screenshots/`. Add your images there with these filenames.
 
 ### Hero — clean, distraction-free interface
 
@@ -192,6 +204,9 @@ If verification fails, the agent substitutes a safe fallback and flags it transp
 | Safety | Custom Python verifier | Unsafe-phrase blocking |
 | Storage | SQLite + localStorage | Preferences + chat history |
 | Fonts | Noto Sans Tamil | Proper Tamil script rendering |
+| Frontend Host | Cloudflare Pages | Global CDN, free tier |
+| Backend Host | Render | Free tier with uptime monitoring |
+| Monitoring | UptimeRobot | Keeps backend awake |
 
 ---
 
@@ -257,6 +272,47 @@ npm run dev
 
 ---
 
+## Deployment
+
+### Backend — Render
+
+1. Create a new **Web Service** on [Render](https://render.com)
+2. Connect the GitHub repository
+3. Set:
+   - **Root Directory**: `backend`
+   - **Runtime**: Python 3
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   - **Instance Type**: Free
+4. Add environment variables:
+   - `SARVAM_API_KEY`
+   - `GEMINI_API_KEY`
+   - `PYTHON_VERSION=3.11.9`
+
+### Frontend — Cloudflare Pages
+
+1. Go to **Workers & Pages** → **Create application** → **Pages tab**
+2. Connect the GitHub repository
+3. Set:
+   - **Framework preset**: React (Vite)
+   - **Build command**: `npm run build`
+   - **Build output directory**: `dist`
+   - **Root directory**: `frontend`
+4. Add environment variable:
+   - `VITE_API_URL` = `https://polycygot-backend.onrender.com`
+5. Click **Save and Deploy**
+
+### Keep Backend Awake — UptimeRobot
+
+Render's free tier sleeps after 15 minutes of inactivity. To prevent cold-start delays:
+
+1. Sign up at [uptimerobot.com](https://uptimerobot.com) (free)
+2. Add a new **HTTP(s)** monitor
+3. URL: `https://polycygot-backend.onrender.com/`
+4. Interval: **5 minutes**
+
+---
+
 ## API Reference
 
 | Method | Endpoint | Purpose |
@@ -275,7 +331,7 @@ Full interactive docs available at `/docs` when the backend is running.
 
 ## Test Results
 
-All tests run against a live backend. Language detection via Sarvam, reasoning via Gemini 3.5 Flash-Lite.
+All tests run against the live deployment. Language detection via Sarvam, reasoning via Gemini 3.5 Flash-Lite.
 
 ### English
 
