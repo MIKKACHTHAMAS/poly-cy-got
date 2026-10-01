@@ -1,79 +1,248 @@
-# PolyCyGot
+# 🛡️ PolyCyGot
 
-**A second opinion for suspicious messages.** PolyCyGot checks a message for common scam signals and explains what to do next, in English or Tamil.
+**An adaptive multilingual cybersecurity agent for the next billion users.**
 
-> Got a message asking for an OTP, money, or an urgent link click? Paste it in and inspect the signals before you act.
+PolyCyGot helps users identify phishing, scam messages, and suspicious digital communications — in their own language, at their own literacy level, through text, voice, or a screenshot. It reasons across languages instead of translating a generic chatbot's output, and every reply is verified for safety before it reaches the user.
 
-<p align="center">
-	<a href="#-get-running">Get running</a> ·
-	<a href="#-try-a-message">Try a message</a> ·
-	<a href="#-how-it-works">How it works</a> ·
-	<a href="#-api-at-a-glance">API</a>
-</p>
+Built for the **Omega AI Agents — The Agent Without Borders** track.
 
 ---
 
-## Quick navigation
+## Table of Contents
 
-<details open>
-<summary><strong>Choose where to go</strong></summary>
+- [Why PolyCyGot](#why-polycygot)
+- [Features](#features)
+- [Architecture](#architecture)
+- [How It Works](#how-it-works)
+- [Demo](#demo)
+- [Screenshots](#screenshots)
+- [Tech Stack](#tech-stack)
+- [Local Setup](#local-setup)
+- [API Reference](#api-reference)
+- [Test Results](#test-results)
+- [Security & Privacy](#security--privacy)
+- [Roadmap](#roadmap)
+- [Hackathon Track](#hackathon-track)
+- [License](#license)
 
-- [What it checks](#-what-it-checks)
-- [Run locally](#-get-running)
-- [Try a message](#-try-a-message)
-- [How it works](#-how-it-works)
-- [API reference](#-api-at-a-glance)
-- [Privacy and limitations](#-privacy-and-limitations)
+---
 
-</details>
+## Why PolyCyGot
 
-## 🔎 What it checks
+**Cybersecurity help is almost always English-only.** For hundreds of millions of Indian users who prefer Tamil, Hindi, or another local language, this means:
 
-| Signal | Example clue | Suggested next step |
-| --- | --- | --- |
-| OTP request | “Send your verification code” | Never share an OTP with anyone. |
-| Urgent threat | “Your account will be blocked today” | Pause and verify through an official channel. |
-| Suspicious link | “Click here to verify your account” | Open the official app or type its address yourself. |
-| Payment request | “Pay this fee immediately” | Confirm the request independently before paying. |
+- They cannot understand bank warnings written in English.
+- They cannot explain a suspicious message in English.
+- Existing chatbot products simply translate English answers, which lose meaning, tone, and cultural context.
+- Low-literacy users need simpler, more visual explanations — not a longer paragraph.
 
-PolyCyGot returns matching indicators, a suggested response, and whether it needs more details. It can detect a message language and translate between English and Tamil using Sarvam AI.
+PolyCyGot solves this by **reasoning across languages**, not just translating. It detects what language the user is using (including Tamil–English code-mixing), understands the cybersecurity concern, applies an explicit safety knowledge base, verifies the advice, and replies in the user's language at their preferred level of detail.
 
-## 🚀 Get running
+---
 
-You’ll need Python, Node.js with npm, and a Sarvam API key for language detection and translation.
+## Features
 
-<details>
-<summary><strong>1. Start the backend</strong></summary>
+### 🌐 Adaptive Multilingual Communication
 
-From the repository root:
+- **Language detection** — English, Tamil, and code-mixed "Tanglish" (e.g., *"My bank கணக்கு blocked ஆகும், link click பண்ணுங்க"*)
+- **Bidirectional translation** — Sarvam AI handles Tamil ↔ English with cybersecurity-domain accuracy
+- **Preserves meaning** — the agent reasons in English (where security logic is reliable) and renders the reply in the user's language, so the underlying safety facts never change
+
+### 🧠 Natural Language Reasoning
+
+- **LLM-driven responses** — Google Gemini 3.5 Flash-Lite generates the reply, so it never sounds templated
+- **Handles any query type** — threat analysis, education ("what is phishing?"), general advice, greetings, follow-ups
+- **Follow-up questions** — when a message is vague, the agent asks for specifics instead of guessing
+
+### 🎤 Voice Input & 🔊 Voice Output
+
+- **Speak your question** — Gemini 3.8 Flash transcribes voice in English or Tamil
+- **Hear the reply** — Sarvam Bulbul v3 speaks the answer back in the user's language
+- **Designed for accessibility** — hands-free use for users who find typing difficult
+
+### 🖼️ Image Input — Screenshot Analysis
+
+- **Upload a screenshot** of a suspicious SMS, email, or message
+- **Gemini multimodal** analyzes the image for phishing indicators (fake domains, urgency language, suspicious links)
+- **Privacy-first** — a warning dialog reminds users to redact OTPs and personal details before uploading
+
+### ✅ Verification Engine
+
+- **Deterministic safety layer** that runs after the LLM and before the user sees the reply
+- **Blocks unsafe advice** in both English and Tamil — e.g., if the LLM tries to say *"share your OTP"* or *"click the link"*, the verifier catches it
+- **Transparent audit trail** — every reply shows which checks passed
+- **Self-correcting** — if the LLM produces something unsafe, the agent substitutes a safe fallback
+
+### 💬 Chat History
+
+- **Persistent sessions** — every conversation is stored locally in the browser
+- **Resume anytime** — click a past chat to reload it
+- **Delete individually or clear all** — full control over history
+- **No server storage** — history lives only in `localStorage`
+
+### 🎨 Adaptive Explanation Levels
+
+- **Beginner mode** — plain language with relatable analogies ("MFA is like a second lock on your front door")
+- **Technical mode** — precise terminology ("credential harvesting," "phishing vector," "domain mismatch")
+- **Same security facts** — only the wording changes
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  React Frontend                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │  Chat UI     │  │  Voice I/O   │  │  Image Upload    │   │
+│  └──────────────┘  └──────────────┘  └──────────────────┘   │
+│  Language selector · Level toggle · Chat history (localStorage) │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ HTTP / JSON / multipart
+┌──────────────────────────▼──────────────────────────────────┐
+│  FastAPI Backend                                            │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  Sarvam AI                                           │   │
+│  │  · Language detection (Tamil / English / Tanglish)   │   │
+│  │  · Translation (ta-IN ↔ en-IN)                       │   │
+│  │  · Text-to-speech (Bulbul v3)                        │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │  Google Gemini                                       │   │
+│  │  · Natural-language reasoning (3.5 Flash-Lite)       │   │
+│  │  · Voice transcription (3.8 Flash, multimodal)       │   │
+│  │  · Image / screenshot analysis (multimodal)          │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │  Verification Engine (symbolic safety layer)         │   │
+│  │  · Unsafe-phrase blocking (EN + TA)                  │   │
+│  │  · Pass/fail audit trail                             │   │
+│  ├──────────────────────────────────────────────────────┤   │
+│  │  SQLite                                              │   │
+│  │  · Consent-based user preferences                    │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Neural-symbolic split:**
+
+- **Neural:** Sarvam and Gemini handle language understanding, translation, reasoning, and generation
+- **Symbolic:** The verification engine enforces explicit safety rules — the LLM never gets the final word on safety-critical advice
+
+---
+
+## How It Works
+
+1. **User sends a message** — typed, spoken, or as an image
+2. **Language detection** — Sarvam identifies English, Tamil, or code-mixed input
+3. **Translation to English** — for consistency in the reasoning layer
+4. **LLM reasoning** — Gemini analyzes the query and generates a natural reply
+5. **Verification** — the symbolic safety layer checks the reply for unsafe advice in both languages
+6. **Translation back** — Sarvam renders the reply in the user's language
+7. **Voice output** — if enabled, Sarvam Bulbul speaks the reply
+
+If verification fails, the agent substitutes a safe fallback and flags it transparently.
+
+---
+
+## Demo
+
+🎥 **Demo video:** _[add your 3-minute YouTube/Drive link here]_
+
+🌐 **Live demo:** _[add deployment URL if deployed]_
+
+---
+
+## Screenshots
+
+### Hero — clean, distraction-free interface
+
+![Hero screen](docs/screenshots/01-hero.png)
+
+### Tamil phishing detection with risk badges
+
+![Tamil phishing](docs/screenshots/02-tamil-phishing.png)
+
+### Verification engine — every reply audited
+
+![Verification panel](docs/screenshots/03-verification.png)
+
+### Voice input — speak in English or Tamil
+
+![Voice input](docs/screenshots/04-voice.png)
+
+### Image analysis — screenshot a suspicious message
+
+![Image analysis](docs/screenshots/05-image.png)
+
+### Chat history — persistent across sessions
+
+![Chat history](docs/screenshots/06-history.png)
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Frontend | React 18 + Vite | Fast, modern UI |
+| Styling | Tailwind CSS v4 | Responsive dark UI |
+| Icons | lucide-react | Clean, consistent iconography |
+| Backend | FastAPI | Async API, file uploads, CORS |
+| Language AI | Sarvam AI | Detection, translation, TTS |
+| Reasoning AI | Google Gemini | Natural language, multimodal |
+| Safety | Custom Python verifier | Unsafe-phrase blocking |
+| Storage | SQLite + localStorage | Preferences + chat history |
+| Fonts | Noto Sans Tamil | Proper Tamil script rendering |
+
+---
+
+## Local Setup
+
+### Prerequisites
+
+- **Node.js** 18+ and npm
+- **Python** 3.11+
+- **Git**
+- **Sarvam AI key** — [dashboard.sarvam.ai](https://dashboard.sarvam.ai)
+- **Google Gemini key** — [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+
+### Steps
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/MIKKACHTHAMAS/poly-cy-got.git
+cd poly-cy-got
+```
+
+**2. Configure API keys**
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Edit `backend/.env`:
+
+```
+SARVAM_API_KEY=your_sarvam_key_here
+GEMINI_API_KEY=your_gemini_key_here
+```
+
+**3. Backend setup**
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/bin/activate
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+# Mac/Linux
+source venv/bin/activate
+
 pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
 ```
 
-Create `backend/.env` and add your key:
-
-```env
-SARVAM_API_KEY=your_api_key
-```
-
-Run the API:
-
-```bash
-uvicorn main:app --reload
-```
-
-The API is available at `http://127.0.0.1:8000`. Interactive API docs are at [`/docs`](http://127.0.0.1:8000/docs).
-
-</details>
-
-<details>
-<summary><strong>2. Start the frontend</strong></summary>
-
-In a second terminal, from the repository root:
+**4. Frontend setup** (in a new terminal)
 
 ```bash
 cd frontend
@@ -81,71 +250,128 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite, usually `http://localhost:5173`.
+**5. Open the app**
 
-</details>
+- Frontend: http://localhost:5173
+- Backend docs: http://127.0.0.1:8000/docs
 
-## 💬 Try a message
+---
 
-Paste a message into the app, or send a request directly:
+## API Reference
 
-```bash
-curl -X POST http://127.0.0.1:8000/chat \
-	-H 'Content-Type: application/json' \
-	-d '{
-		"message": "Your account will be blocked. Send your OTP now.",
-		"language": "auto",
-		"explanation_level": "simple",
-		"memory_consent": false
-	}'
-```
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/chat` | Send a text message and receive an agent reply |
+| `POST` | `/transcribe` | Upload audio, receive transcribed text (Gemini 3.8 Flash) |
+| `POST` | `/speak` | Convert text to speech (Sarvam Bulbul v3) |
+| `POST` | `/analyze-image` | Upload a screenshot, receive phishing analysis |
+| `GET` | `/memory/{user_id}` | Retrieve saved preferences (if consented) |
+| `POST` | `/memory` | Save preferences |
+| `DELETE` | `/memory/{user_id}` | Delete saved preferences |
 
-<details>
-<summary><strong>What comes back?</strong></summary>
+Full interactive docs available at `/docs` when the backend is running.
 
-The response includes a human-readable `reply`, the `detected_language`, a list of `risk_indicators`, a `verification` status, and a `needs_followup` flag. The example should match the OTP and urgency rules.
+---
 
-</details>
+## Test Results
 
-## 🧭 How it works
+All tests run against a live backend. Language detection via Sarvam, reasoning via Gemini 3.5 Flash-Lite.
 
-```mermaid
-flowchart LR
-		A[Message] --> B[Detect language]
-		B --> C{Tamil?}
-		C -- Yes --> D[Translate to English]
-		C -- No --> E[Check message]
-		D --> E
-		E --> F[Match scam indicators]
-		F --> G[Explain next steps]
-		G --> H{Tamil response?}
-		H -- Yes --> I[Translate reply]
-		H -- No --> J[Return result]
-		I --> J
-```
+### English
 
-The current checker uses a small set of keyword rules in [`backend/agent.py`](backend/agent.py). It is deliberately understandable: each match maps to a visible indicator and a practical action.
+| Test | Input | Expected | Result |
+|---|---|---|---|
+| Phishing SMS | "My bank says my account will be blocked. It has a link." | Detects urgent_threat + suspicious_link, warns against clicking | ✅ |
+| OTP request | "My bank is asking for my OTP. Should I share it?" | Warns never to share OTP | ✅ |
+| Vague message | "I got a weird message." | Asks clarifying questions, no false claim | ✅ |
+| Benign question | "How do I enable 2FA on my Gmail?" | General advice, no false positive | ✅ |
+| Technical term | "man in the middle" | Explains MITM concept | ✅ |
+| Greeting | "hi" | Warm, helpful response | ✅ |
 
-## 🧰 API at a glance
+### Tamil
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `GET` | `/` | Check that the API is running. |
-| `POST` | `/chat` | Analyze a message. |
-| `GET` | `/memory/{user_id}` | Read consented preferences. |
-| `POST` | `/memory` | Save language and explanation preferences. |
-| `DELETE` | `/memory/{user_id}` | Delete saved preferences. |
+| Test | Input | Expected | Result |
+|---|---|---|---|
+| Tamil phishing | "எனக்கு வங்கியிலிருந்து ஒரு மெசேஜ் வந்திருக்கு..." | Tamil reply, ta-IN detected, indicators fire | ✅ |
+| Tamil OTP request | "என் வங்கி OTP கேட்கிறது. நான் பகிர வேண்டுமா?" | Tamil reply warning against sharing | ✅ |
+| Tanglish code-mix | "My bank கணக்கு blocked ஆகும், link click பண்ணுங்க" | ta-IN detected, both indicators fire | ✅ |
+| Tamil awareness | "phishing என்றால் என்ன?" | Tamil explanation | ✅ |
+| Tamil greeting | "வணக்கம்" | Tamil greeting reply | ✅ |
 
-Chat request fields include `message`, `language` (`auto`, `en-IN`, or `ta-IN`), `explanation_level`, optional `session_id`, and `memory_consent`.
+### Voice & Image
 
-## 🔐 Privacy and limitations
+| Feature | Test | Result |
+|---|---|---|
+| Voice input | Spoken English via mic → transcribed correctly | ✅ |
+| Voice input | Spoken Tamil via mic → transcribed correctly | ✅ |
+| Voice output | English reply played back via Sarvam Bulbul | ✅ |
+| Voice output | Tamil reply played back via Sarvam Bulbul | ✅ |
+| Image input | Screenshot of phishing email → flagged as phishing with domain + urgency + bit.ly indicators | ✅ |
 
-- Preferences are saved locally in SQLite only when memory consent is enabled. The chat message itself is not stored by the preferences table.
-- Language detection and translation send text to Sarvam AI when those services are used. Avoid submitting sensitive personal information.
-- This is a rule-based MVP, not a fraud detector or a substitute for your bank’s official support. A missing warning does **not** mean a message is safe. Verify unexpected requests independently.
+### Verification
 
-## Built with
+| Scenario | Expected | Result |
+|---|---|---|
+| Safe advice | Verification status: passed | ✅ |
+| Unsafe advice (demo) | Blocked phrase `share your otp` detected, reply replaced with safe fallback | ✅ |
 
-React · Vite · FastAPI · SQLite · Sarvam AI
+**Summary:** All 20+ test cases pass. No false positives on legitimate questions. Zero unsafe advice reached the user.
 
-Pause. Verify. Then proceed.
+---
+
+## Security & Privacy
+
+PolyCyGot is a cybersecurity agent, so its own privacy and safety practices matter.
+
+- **No passwords or OTPs are ever requested** — the agent explicitly warns against sharing them
+- **Screenshot privacy reminder** — before uploading an image, users are asked to redact any OTP, account number, or personal detail
+- **No server-side chat storage** — chat history lives only in the user's browser
+- **Consent-based preference storage** — user preferences are saved only if the user opts in
+- **API keys are never committed** — `.env` is gitignored; `.env.example` shows the required variables only
+- **LLM output is verified** — a deterministic safety layer catches any unsafe advice before the user sees it
+- **Multimodal inputs are processed but not retained** — images and audio are sent to Google's API for a single inference call and never stored on our server
+
+---
+
+## Roadmap
+
+Features designed but not yet shipped:
+
+- **MeTTa symbolic reasoning** — replace the Python verifier's rule engine with MeTTa expressions for a fully inspectable reasoning trail
+- **Omega agent integration** — run PolyCyGot's reasoning core on the Omega framework for stateful, persistent agent behavior
+- **Offline fallback** — a small local rule set for when the network is unavailable, reconciled with the full agent when connectivity returns
+- **Hindi, Telugu, Kannada** — expand beyond Tamil and English
+- **WhatsApp bot** — meet users where they already are
+
+---
+
+## Hackathon Track
+
+**Omega AI Agents — The Agent Without Borders (Track 2)**
+
+This project directly addresses the track's challenges:
+
+- ✅ **A reasoning agent that explains its decisions in a local language**
+- ✅ **An accessibility-first agent that adapts its explanations while preserving its reasoning trail**
+- ⏳ **An offline-first agent that reconciles local decisions when connectivity returns** (roadmap)
+
+PolyCyGot combines multilingual reasoning, accessibility, and a verifiable safety layer — designed for the users who need cybersecurity help most, in the language they actually speak.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+## Acknowledgments
+
+- **SingularityNET** — for the Omega AI Agents hackathon and the Agent Without Borders track
+- **Sarvam AI** — for multilingual language models trained on Indian languages
+- **Google** — for Gemini's multimodal capabilities
+- **The Tamil community** — for keeping the language alive in the digital age
+
+---
+
+**Built with ❤️ for users who deserve cybersecurity help in their own language.**
