@@ -1,8 +1,10 @@
-
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+import httpx
+import os
+import base64
 
 from agent import process_message
 from database import init_db, get_preferences, save_preferences, delete_preferences
@@ -41,28 +43,26 @@ def home():
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    # Check memory if session exists and consent given
     prefs = None
     if request.session_id:
         prefs = get_preferences(request.session_id)
-    
+
     language = request.language
     level = request.explanation_level
-    
+
     if prefs:
         if language == "auto":
             language = prefs.get("preferred_language", language)
         if level == "simple" or level is None:
             level = prefs.get("explanation_level", level)
-    
+
     result = await process_message(
         message=request.message,
         language=language,
         explanation_level=level,
         session_id=request.session_id
     )
-    
-    # Save preferences if consent given
+
     if request.session_id and request.memory_consent:
         save_preferences(
             request.session_id,
@@ -70,7 +70,7 @@ async def chat(request: ChatRequest):
             level,
             True
         )
-    
+
     return result
 
 @app.get("/memory/{user_id}")
@@ -92,3 +92,77 @@ def save_memory(request: MemoryRequest):
 def delete_memory(user_id: str):
     delete_preferences(user_id)
     return {"status": "deleted"}
+
+@app.post("/transcribe")
+async def transcribe(audio: UploadFile = File(...)):
+    """Convert speech audio to text using Gemini 3.5 Flash-Lite (multimodal)."""
+    audio_bytes = await audio.read()
+    gemini_key = os.getenv("GEMINI_API_KEY")
+
+    if not gemini_key:
+        return {"text": "", "error": "GEMINI_API_KEY not set"}
+
+    try:
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                # Changed model to gemini-3.5-flash-lite
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={gemini_key}",
+                json={
+                    "contents": [{
+                        "parts": [
+                            {"text": (
+                                "Transcribe this audio exactly as spoken. "
+                                "Return ONLY the transcribed text — no commentary, "
+                                "no translation, no formatting. If the audio is in "
+                                "Tamil, return Tamil text. If English, return English."
+                            )},
+                            {
+                                "inline_data": {
+                                    "mime_type": "audio/wav",
+                                    "data": audio_b64
+                                }
+                            }
+                        ]
+                    }]
+                }
+            )
+
+            if resp.status_code != 200:
+                print(f"[TRANSCRIBE ERROR] {resp.status_code}: {resp.text[:400]}")
+                return {"text": "", "error": resp.text[:400]}
+
+            result = resp.json()
+            try:
+                transcript = result["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError) as e:
+                print(f"[TRANSCRIBE PARSE ERROR] {e}: {result}")
+                transcript = ""
+
+            return {"text": transcript.strip()}
+
+    except Exception as e:
+        print(f"[TRANSCRIBE EXCEPTION] {type(e).__name__}: {e}")
+        return {"text": "", "error": str(e)}
+
+@app.post("/speak")
+async def speak(text: str, language: str = "ta-IN"):
+    """Convert text to speech audio using Sarvam AI Bulbul v3."""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            "https://api.sarvam.ai/text-to-speech",
+            json={
+                "inputs": [text],
+                "target_language_code": language,
+                "speaker": "priya",       # Updated to a v3 speaker
+                "model": "bulbul:v3"      # Updated from bulbul:v2
+            },
+            headers={"api-subscription-key": os.getenv("SARVAM_API_KEY")}
+        )
+        if resp.status_code != 200:
+            print(f"[SPEAK ERROR] {resp.status_code}: {resp.text[:400]}")
+            return {"audio": None, "error": resp.text}
+        data = resp.json()
+        audios = data.get("audios", [])
+        return {"audio": audios[0] if audios else None}

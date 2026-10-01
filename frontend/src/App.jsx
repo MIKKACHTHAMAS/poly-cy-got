@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Shield, Send, Globe, Brain, Trash2, Copy, Check,
-  ChevronDown, ChevronUp, AlertTriangle, Sparkles, X
+  ChevronDown, ChevronUp, AlertTriangle, Sparkles, X,
+  Mic, Volume2, VolumeX
 } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000";
@@ -13,6 +14,45 @@ const EXAMPLE_PROMPTS = [
   { icon: "வங்கி", label: "சந்தேகத்திற்குரிய SMS", text: "வங்கியிலிருந்து சந்தேகத்திற்குரிய SMS வந்தது. அதில் ஒரு லிங்க் இருக்கு." },
   { icon: "OTP", label: "OTP கேட்கும் மெசேஜ்", text: "என் வங்கி OTP கேட்கிறது. நான் பகிர வேண்டுமா?" },
 ];
+
+// Convert decoded audioBuffer to WAV blob
+function audioBufferToWav(audioBuffer) {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const length = audioBuffer.length * numChannels * 2 + 44;
+  const buffer = new ArrayBuffer(length);
+  const view = new DataView(buffer);
+  const channels = [];
+  let offset = 0;
+
+  const writeString = (str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset++, str.charCodeAt(i));
+  };
+
+  writeString("RIFF");
+  view.setUint32(offset, length - 8, true); offset += 4;
+  writeString("WAVE");
+  writeString("fmt ");
+  view.setUint32(offset, 16, true); offset += 4;
+  view.setUint16(offset, 1, true); offset += 2;
+  view.setUint16(offset, numChannels, true); offset += 2;
+  view.setUint32(offset, sampleRate, true); offset += 4;
+  view.setUint32(offset, sampleRate * numChannels * 2, true); offset += 4;
+  view.setUint16(offset, numChannels * 2, true); offset += 2;
+  view.setUint16(offset, 16, true); offset += 2;
+  writeString("data");
+  view.setUint32(offset, length - offset - 4, true); offset += 4;
+
+  for (let i = 0; i < numChannels; i++) channels.push(audioBuffer.getChannelData(i));
+  for (let i = 0; i < audioBuffer.length; i++) {
+    for (let j = 0; j < numChannels; j++) {
+      const sample = Math.max(-1, Math.min(1, channels[j][i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
 
 export default function App() {
   const [message, setMessage] = useState("");
@@ -27,6 +67,12 @@ export default function App() {
   const [copiedIndex, setCopiedIndex] = useState(null);
   const messagesEndRef = useRef(null);
 
+  // Voice state
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceOutput, setVoiceOutput] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
   const [sessionId] = useState(() => {
     let id = localStorage.getItem("polycygot_session_id");
     if (!id) {
@@ -38,8 +84,8 @@ export default function App() {
 
   useEffect(() => {
     fetch(`${API_URL}/memory/${sessionId}`)
-      .then(r => r.json())
-      .then(data => {
+      .then((r) => r.json())
+      .then((data) => {
         if (data.preferences) {
           setMemoryStatus(data.preferences);
           setLanguage(data.preferences.preferred_language || "auto");
@@ -54,11 +100,85 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  // Voice input: toggle start/stop
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const webmBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        stream.getTracks().forEach((t) => t.stop());
+
+        try {
+          const arrayBuffer = await webmBlob.arrayBuffer();
+          const audioContext = new AudioContext();
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+          const wavBlob = audioBufferToWav(audioBuffer);
+
+          const formData = new FormData();
+          formData.append("audio", wavBlob, "voice.wav");
+
+          const resp = await fetch(`${API_URL}/transcribe`, {
+            method: "POST",
+            body: formData,
+          });
+          const data = await resp.json();
+          if (data.text) {
+            setMessage(data.text);
+          } else {
+            console.warn("Transcription empty:", data);
+          }
+        } catch (err) {
+          console.error("Transcription failed:", err);
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Mic access denied:", err);
+      alert("Microphone access is required for voice input.");
+    }
+  }
+
+  function stopRecording() {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  }
+
+  // Voice output
+  async function speakReply(text, lang) {
+    try {
+      const resp = await fetch(
+        `${API_URL}/speak?text=${encodeURIComponent(text)}&language=${lang}`,
+        { method: "POST" }
+      );
+      const data = await resp.json();
+      if (data.audio) {
+        const audio = new Audio("data:audio/wav;base64," + data.audio);
+        audio.play();
+      } else if (data.error) {
+        console.error("Speak error:", data.error);
+      }
+    } catch (err) {
+      console.error("Speak failed:", err);
+    }
+  }
+
   async function sendMessage(customText) {
     const text = (customText ?? message).trim();
     if (!text || loading) return;
 
-    setMessages(prev => [...prev, { role: "user", text }]);
+    setMessages((prev) => [...prev, { role: "user", text }]);
     setMessage("");
     setLoading(true);
 
@@ -78,19 +198,29 @@ export default function App() {
       if (!response.ok) throw new Error("Request failed");
       const data = await response.json();
 
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        text: data.reply,
-        indicators: data.risk_indicators,
-        verification: data.verification,
-        detectedLang: data.detected_language,
-        needsFollowup: data.needs_followup,
-      }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: data.reply,
+          indicators: data.risk_indicators,
+          verification: data.verification,
+          detectedLang: data.detected_language,
+          needsFollowup: data.needs_followup,
+        },
+      ]);
+
+      if (voiceOutput && data.reply) {
+        speakReply(data.reply, data.detected_language || "en-IN");
+      }
     } catch {
-      setMessages(prev => [...prev, {
-        role: "assistant",
-        text: "Unable to connect. Please check the backend is running.",
-      }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "Unable to connect. Please check the backend is running.",
+        },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -125,7 +255,7 @@ export default function App() {
   }
 
   function toggleVerification(index) {
-    setExpandedVerification(prev => ({ ...prev, [index]: !prev[index] }));
+    setExpandedVerification((prev) => ({ ...prev, [index]: !prev[index] }));
   }
 
   const riskStyle = (risk) =>
@@ -147,7 +277,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-20">
         <div className="px-4 md:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -173,7 +302,7 @@ export default function App() {
               </span>
             </div>
             <button
-              onClick={() => setSidebarOpen(o => !o)}
+              onClick={() => setSidebarOpen((o) => !o)}
               className="md:hidden bg-slate-800 border border-slate-700 rounded-lg p-2"
             >
               {sidebarOpen ? <X className="w-4 h-4" /> : <Brain className="w-4 h-4" />}
@@ -183,7 +312,6 @@ export default function App() {
       </header>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* Sidebar */}
         <aside
           className={`${
             sidebarOpen ? "block" : "hidden"
@@ -192,7 +320,7 @@ export default function App() {
           <Section title="Language">
             <select
               value={language}
-              onChange={e => setLanguage(e.target.value)}
+              onChange={(e) => setLanguage(e.target.value)}
               className="w-full bg-slate-800 border border-slate-700 rounded-lg p-2 text-sm"
             >
               <option value="auto">Auto-detect</option>
@@ -203,7 +331,7 @@ export default function App() {
 
           <Section title="Explanation level">
             <div className="grid grid-cols-2 gap-2">
-              {["simple", "technical"].map(lv => (
+              {["simple", "technical"].map((lv) => (
                 <button
                   key={lv}
                   onClick={() => setLevel(lv)}
@@ -219,12 +347,33 @@ export default function App() {
             </div>
           </Section>
 
+          <Section title="Voice">
+            <button
+              onClick={() => setVoiceOutput((v) => !v)}
+              className={`w-full flex items-center justify-between text-xs py-2 px-3 rounded-lg border transition ${
+                voiceOutput
+                  ? "bg-teal-600/20 border-teal-600 text-teal-300"
+                  : "bg-slate-800 border-slate-700 text-slate-300"
+              }`}
+            >
+              <span>Speak replies aloud</span>
+              {voiceOutput ? (
+                <Volume2 className="w-4 h-4" />
+              ) : (
+                <VolumeX className="w-4 h-4" />
+              )}
+            </button>
+            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+              Tap the mic to start recording. Tap again to stop and transcribe.
+            </p>
+          </Section>
+
           <Section title="Memory & privacy">
             <label className="flex items-start gap-2 cursor-pointer text-sm">
               <input
                 type="checkbox"
                 checked={memoryConsent}
-                onChange={e => {
+                onChange={(e) => {
                   setMemoryConsent(e.target.checked);
                   if (e.target.checked) savePreferences();
                   else clearMemory();
@@ -283,7 +432,6 @@ export default function App() {
           </Section>
         </aside>
 
-        {/* Chat area */}
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4 md:p-6">
             <div className="max-w-3xl mx-auto space-y-4">
@@ -311,6 +459,9 @@ export default function App() {
                       riskStyle={riskStyle}
                       statusStyle={statusStyle}
                       langLabel={langLabel}
+                      onSpeak={() =>
+                        speakReply(item.text, item.detectedLang || "en-IN")
+                      }
                     />
                   )}
                 </div>
@@ -321,25 +472,57 @@ export default function App() {
             </div>
           </div>
 
-          {/* Input */}
           <div className="border-t border-slate-800 bg-slate-900/60 backdrop-blur p-3 md:p-4">
-            <div className="max-w-3xl mx-auto flex gap-2">
+            <div className="max-w-3xl mx-auto flex gap-2 items-center">
+              <button
+                onClick={isRecording ? stopRecording : startRecording}
+                className={`p-3 rounded-xl transition ${
+                  isRecording
+                    ? "bg-red-600 animate-pulse text-white"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-300"
+                }`}
+                title={isRecording ? "Tap to stop" : "Tap to speak"}
+              >
+                <Mic className="w-5 h-5" />
+              </button>
+
               <input
                 value={message}
-                onChange={e => setMessage(e.target.value)}
-                onKeyDown={e => {
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
                     sendMessage();
                   }
                 }}
-                placeholder="Ask a cybersecurity question (English or Tamil)..."
+                placeholder={
+                  isRecording
+                    ? "🔴 Recording... tap mic to stop"
+                    : "Ask a cybersecurity question (English or Tamil)..."
+                }
                 className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-teal-600 text-sm"
               />
+
+              <button
+                onClick={() => setVoiceOutput((v) => !v)}
+                className={`p-3 rounded-xl transition ${
+                  voiceOutput
+                    ? "bg-teal-600 text-white"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-300"
+                }`}
+                title={voiceOutput ? "Voice output ON" : "Voice output OFF"}
+              >
+                {voiceOutput ? (
+                  <Volume2 className="w-5 h-5" />
+                ) : (
+                  <VolumeX className="w-5 h-5" />
+                )}
+              </button>
+
               <button
                 onClick={() => sendMessage()}
                 disabled={loading || !message.trim()}
-                className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed px-4 md:px-5 rounded-xl flex items-center gap-2 font-semibold text-sm"
+                className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed px-4 md:px-5 py-3 rounded-xl flex items-center gap-2 font-semibold text-sm"
               >
                 <Send className="w-4 h-4" />
                 <span className="hidden md:inline">Send</span>
@@ -379,8 +562,16 @@ function UserBubble({ text }) {
 }
 
 function AgentBubble({
-  item, index, onCopy, copied, expanded, onToggle,
-  riskStyle, statusStyle, langLabel,
+  item,
+  index,
+  onCopy,
+  copied,
+  expanded,
+  onToggle,
+  riskStyle,
+  statusStyle,
+  langLabel,
+  onSpeak,
 }) {
   const isTamil = /[\u0B80-\u0BFF]/.test(item.text);
   return (
@@ -399,11 +590,22 @@ function AgentBubble({
               </span>
             )}
             <button
+              onClick={onSpeak}
+              className="text-slate-500 hover:text-teal-400"
+              title="Play this reply"
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+            </button>
+            <button
               onClick={onCopy}
               className="text-slate-500 hover:text-slate-300"
               title="Copy reply"
             >
-              {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? (
+                <Check className="w-3.5 h-3.5 text-green-400" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
             </button>
           </div>
         </div>
@@ -417,7 +619,9 @@ function AgentBubble({
             {item.indicators.map((ind, i) => (
               <span
                 key={i}
-                className={`text-xs px-2 py-1 rounded-md border flex items-center gap-1 ${riskStyle(ind.risk)}`}
+                className={`text-xs px-2 py-1 rounded-md border flex items-center gap-1 ${riskStyle(
+                  ind.risk
+                )}`}
               >
                 <AlertTriangle className="w-3 h-3" />
                 {ind.indicator} · {ind.risk}
@@ -434,11 +638,19 @@ function AgentBubble({
             >
               <div className="flex items-center gap-2">
                 <span>Verification</span>
-                <span className={`px-2 py-0.5 rounded-full border font-semibold ${statusStyle(item.verification.status)}`}>
+                <span
+                  className={`px-2 py-0.5 rounded-full border font-semibold ${statusStyle(
+                    item.verification.status
+                  )}`}
+                >
                   {item.verification.status}
                 </span>
               </div>
-              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              {expanded ? (
+                <ChevronUp className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5" />
+              )}
             </button>
 
             {expanded && (
@@ -450,7 +662,9 @@ function AgentBubble({
                     ) : (
                       <X className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
                     )}
-                    <span className={check.passed ? "text-slate-300" : "text-red-300"}>
+                    <span
+                      className={check.passed ? "text-slate-300" : "text-red-300"}
+                    >
                       {check.rule}
                     </span>
                   </li>
@@ -460,7 +674,8 @@ function AgentBubble({
 
             {item.verification.blocked_phrases?.length > 0 && (
               <div className="mt-2 text-xs bg-red-950/60 border border-red-800 rounded-md p-2 text-red-300">
-                🚫 Blocked unsafe phrases: <b>{item.verification.blocked_phrases.join(", ")}</b>
+                🚫 Blocked unsafe phrases:{" "}
+                <b>{item.verification.blocked_phrases.join(", ")}</b>
               </div>
             )}
           </div>
@@ -498,10 +713,12 @@ function EmptyState({ onSelect }) {
       <div className="w-16 h-16 mx-auto rounded-2xl bg-teal-600/20 border border-teal-700 flex items-center justify-center mb-4">
         <Shield className="w-8 h-8 text-teal-400" />
       </div>
-      <h2 className="text-xl md:text-2xl font-bold">Ask PolyCyGot about anything suspicious</h2>
+      <h2 className="text-xl md:text-2xl font-bold">
+        Ask PolyCyGot about anything suspicious
+      </h2>
       <p className="text-slate-400 text-sm mt-2 max-w-md mx-auto">
-        In English or Tamil. About a suspicious SMS, an OTP request, a link,
-        or general cybersecurity questions.
+        In English or Tamil. Speak or type. About a suspicious SMS, an OTP
+        request, a link, or general cybersecurity questions.
       </p>
 
       <div className="grid md:grid-cols-2 gap-3 max-w-2xl mx-auto mt-8">
@@ -512,10 +729,18 @@ function EmptyState({ onSelect }) {
             className="text-left bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-teal-800 rounded-xl p-3 transition"
           >
             <div className="text-2xl mb-1">{p.icon}</div>
-            <div className={`text-sm font-semibold ${/[\u0B80-\u0BFF]/.test(p.label) ? "tamil" : ""}`}>
+            <div
+              className={`text-sm font-semibold ${
+                /[\u0B80-\u0BFF]/.test(p.label) ? "tamil" : ""
+              }`}
+            >
               {p.label}
             </div>
-            <div className={`text-xs text-slate-400 mt-1 line-clamp-2 ${/[\u0B80-\u0BFF]/.test(p.text) ? "tamil" : ""}`}>
+            <div
+              className={`text-xs text-slate-400 mt-1 line-clamp-2 ${
+                /[\u0B80-\u0BFF]/.test(p.text) ? "tamil" : ""
+              }`}
+            >
               {p.text}
             </div>
           </button>
@@ -524,7 +749,7 @@ function EmptyState({ onSelect }) {
 
       <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mt-8">
         <Sparkles className="w-3 h-3" />
-        Memory, verification, and Tamil support are all live.
+        Voice input, memory, verification, and Tamil support are all live.
       </div>
     </div>
   );
