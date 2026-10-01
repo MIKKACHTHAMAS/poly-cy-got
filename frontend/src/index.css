@@ -12,6 +12,7 @@ html, body, #root {
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  background-color: #020617;
 }
 
 .tamil {
@@ -37,4 +38,13 @@ body {
 }
 .fade-in {
   animation: fadeIn 0.3s ease-out;
+}
+
+/* App background with dark overlay */
+.app-background {
+  background-image: linear-gradient(rgba(2, 6, 23, 0.75), rgba(2, 6, 23, 0.88)),
+    url("/background.jpeg");
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
 }

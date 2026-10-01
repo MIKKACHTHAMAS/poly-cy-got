@@ -2,20 +2,31 @@ import { useState, useEffect, useRef } from "react";
 import {
   Shield, Send, Globe, Brain, Trash2, Copy, Check,
   ChevronDown, ChevronUp, AlertTriangle, Sparkles, X,
-  Mic, Volume2, VolumeX, Image as ImageIcon
+  Mic, Volume2, VolumeX, Image as ImageIcon, Plus, MessageSquare
 } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000";
 
-const EXAMPLE_PROMPTS = [
-  { icon: "🏦", label: "Suspicious bank SMS", text: "My bank says my account will be blocked. It has a link." },
-  { icon: "📱", label: "OTP request received", text: "My bank is asking for my OTP. Should I share it?" },
-  { icon: "🔗", label: "Unknown link clicked", text: "I clicked a link in a message. Am I safe?" },
-  { icon: "வங்கி", label: "சந்தேகத்திற்குரிய SMS", text: "வங்கியிலிருந்து சந்தேகத்திற்குரிய SMS வந்தது. அதில் ஒரு லிங்க் இருக்கு." },
-  { icon: "OTP", label: "OTP கேட்கும் மெசேஜ்", text: "என் வங்கி OTP கேட்கிறது. நான் பகிர வேண்டுமா?" },
-];
+// ---------- Chat history storage ----------
+const HISTORY_KEY = "polycygot_history";
 
-// ---------- Helper: convert decoded audioBuffer to WAV blob ----------
+function loadHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(list) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+}
+
+function newSessionId() {
+  return "session_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+}
+
+// ---------- Helper: convert audioBuffer to WAV ----------
 function audioBufferToWav(audioBuffer) {
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
@@ -60,12 +71,15 @@ export default function App() {
   const [level, setLevel] = useState("simple");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [memoryConsent, setMemoryConsent] = useState(false);
-  const [memoryStatus, setMemoryStatus] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [expandedVerification, setExpandedVerification] = useState({});
   const [copiedIndex, setCopiedIndex] = useState(null);
   const messagesEndRef = useRef(null);
+
+  // Session + history
+  const [sessionId, setSessionId] = useState(() => newSessionId());
+  const [history, setHistory] = useState(() => loadHistory());
+  const [activeHistoryId, setActiveHistoryId] = useState(null);
 
   // Voice state
   const [isRecording, setIsRecording] = useState(false);
@@ -79,32 +93,40 @@ export default function App() {
   const [imageWarning, setImageWarning] = useState(false);
   const fileInputRef = useRef(null);
 
-  const [sessionId] = useState(() => {
-    let id = localStorage.getItem("polycygot_session_id");
-    if (!id) {
-      id = "user_" + Math.random().toString(36).slice(2, 10);
-      localStorage.setItem("polycygot_session_id", id);
-    }
-    return id;
-  });
-
-  useEffect(() => {
-    fetch(`${API_URL}/memory/${sessionId}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.preferences) {
-          setMemoryStatus(data.preferences);
-          setLanguage(data.preferences.preferred_language || "auto");
-          setLevel(data.preferences.explanation_level || "simple");
-          setMemoryConsent(true);
-        }
-      })
-      .catch(() => {});
-  }, [sessionId]);
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  // Auto-save current session into history
+  useEffect(() => {
+    if (messages.length === 0) return;
+
+    const firstUser = messages.find((m) => m.role === "user");
+    const title = (firstUser?.text || "New chat").slice(0, 40);
+
+    const now = Date.now();
+    const existingIndex = history.findIndex((h) => h.id === sessionId);
+
+    let updated;
+    if (existingIndex >= 0) {
+      updated = [...history];
+      updated[existingIndex] = {
+        ...updated[existingIndex],
+        title,
+        messages,
+        updatedAt: now,
+      };
+    } else {
+      updated = [
+        { id: sessionId, title, messages, createdAt: now, updatedAt: now },
+        ...history,
+      ];
+    }
+
+    updated = updated.slice(0, 20);
+    setHistory(updated);
+    saveHistory(updated);
+  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------- Voice input ----------
   async function startRecording() {
@@ -136,11 +158,8 @@ export default function App() {
             body: formData,
           });
           const data = await resp.json();
-          if (data.text) {
-            setMessage(data.text);
-          } else {
-            console.warn("Transcription empty:", data);
-          }
+          if (data.text) setMessage(data.text);
+          else console.warn("Transcription empty:", data);
         } catch (err) {
           console.error("Transcription failed:", err);
         }
@@ -172,8 +191,6 @@ export default function App() {
       if (data.audio) {
         const audio = new Audio("data:audio/wav;base64," + data.audio);
         audio.play();
-      } else if (data.error) {
-        console.error("Speak error:", data.error);
       }
     } catch (err) {
       console.error("Speak failed:", err);
@@ -246,27 +263,19 @@ export default function App() {
           detectedLang: "en-IN",
           verification: {
             status: "passed",
-            checks: [
-              { rule: "Image analyzed by multimodal model", passed: true },
-            ],
+            checks: [{ rule: "Image analyzed by multimodal model", passed: true }],
             blocked_phrases: [],
           },
         },
       ]);
 
-      if (voiceOutput && data.text) {
-        speakReply(data.text, "en-IN");
-      }
-
+      if (voiceOutput && data.text) speakReply(data.text, "en-IN");
       clearImage();
     } catch (err) {
       console.error("Image analysis failed:", err);
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          text: "Unable to analyze the image. Please check the backend is running.",
-        },
+        { role: "assistant", text: "Unable to analyze the image." },
       ]);
     } finally {
       setLoading(false);
@@ -291,7 +300,7 @@ export default function App() {
           language,
           explanation_level: level,
           session_id: sessionId,
-          memory_consent: memoryConsent,
+          memory_consent: false,
         }),
       });
 
@@ -326,27 +335,37 @@ export default function App() {
     }
   }
 
-  // ---------- Memory ----------
-  async function savePreferences() {
-    await fetch(`${API_URL}/memory`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_id: sessionId,
-        preferred_language: language === "auto" ? "en-IN" : language,
-        explanation_level: level,
-        memory_consent: true,
-      }),
-    });
-    const r = await fetch(`${API_URL}/memory/${sessionId}`);
-    const data = await r.json();
-    setMemoryStatus(data.preferences);
+  // ---------- Chat history actions ----------
+  function startNewChat() {
+    setSessionId(newSessionId());
+    setMessages([]);
+    setActiveHistoryId(null);
+    setMessage("");
+    setSidebarOpen(false);
   }
 
-  async function clearMemory() {
-    await fetch(`${API_URL}/memory/${sessionId}`, { method: "DELETE" });
-    setMemoryStatus(null);
-    setMemoryConsent(false);
+  function openHistory(item) {
+    setSessionId(item.id);
+    setMessages(item.messages || []);
+    setActiveHistoryId(item.id);
+    setSidebarOpen(false);
+  }
+
+  function deleteHistory(id, e) {
+    e.stopPropagation();
+    const updated = history.filter((h) => h.id !== id);
+    setHistory(updated);
+    saveHistory(updated);
+    if (activeHistoryId === id) {
+      startNewChat();
+    }
+  }
+
+  function clearAllHistory() {
+    if (!window.confirm("Delete all chat history? This cannot be undone.")) return;
+    setHistory([]);
+    saveHistory([]);
+    startNewChat();
   }
 
   function copyToClipboard(text, index) {
@@ -377,9 +396,9 @@ export default function App() {
     code === "ta-IN" ? "Tamil" : code === "en-IN" ? "English" : code || "—";
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+    <div className="app-background min-h-screen text-slate-100 flex flex-col">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-20">
+      <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur sticky top-0 z-20">
         <div className="px-4 md:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-teal-600/20 border border-teal-700 flex items-center justify-center">
@@ -393,14 +412,10 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="hidden md:flex items-center gap-2 text-xs bg-slate-800 border border-slate-700 rounded-full px-3 py-1">
+            <div className="hidden md:flex items-center gap-2 text-xs bg-slate-800/70 border border-slate-700 rounded-full px-3 py-1">
               <Globe className="w-3 h-3 text-teal-400" />
               <span>
-                {memoryStatus
-                  ? `${langLabel(memoryStatus.preferred_language)} active`
-                  : language === "auto"
-                  ? "Auto-detect"
-                  : langLabel(language)}
+                {language === "auto" ? "Auto-detect" : langLabel(language)}
               </span>
             </div>
             <button
@@ -418,8 +433,50 @@ export default function App() {
         <aside
           className={`${
             sidebarOpen ? "block" : "hidden"
-          } md:block md:w-72 border-b md:border-b-0 md:border-r border-slate-800 bg-slate-900/40 p-4 space-y-5 md:h-[calc(100vh-61px)] md:overflow-y-auto`}
+          } md:block md:w-72 border-b md:border-b-0 md:border-r border-slate-800 bg-slate-900/60 backdrop-blur p-4 space-y-5 md:h-[calc(100vh-61px)] md:overflow-y-auto`}
         >
+          <button
+            onClick={startNewChat}
+            className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-500 text-white text-sm font-semibold py-2 rounded-lg transition"
+          >
+            <Plus className="w-4 h-4" /> New chat
+          </button>
+
+          <Section title="Recent chats">
+            {history.length === 0 ? (
+              <p className="text-xs text-slate-500">No chats yet.</p>
+            ) : (
+              <div className="space-y-1">
+                {history.map((h) => (
+                  <div
+                    key={h.id}
+                    onClick={() => openHistory(h)}
+                    className={`group flex items-center gap-2 text-xs rounded-lg px-2 py-2 cursor-pointer transition ${
+                      activeHistoryId === h.id
+                        ? "bg-teal-600/20 border border-teal-700 text-teal-300"
+                        : "hover:bg-slate-800/80 text-slate-300 border border-transparent"
+                    }`}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                    <span className="flex-1 truncate">{h.title}</span>
+                    <button
+                      onClick={(e) => deleteHistory(h.id, e)}
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={clearAllHistory}
+                  className="w-full mt-2 text-xs text-red-400 hover:text-red-300 text-left px-2 py-1"
+                >
+                  Clear all history
+                </button>
+              </div>
+            )}
+          </Section>
+
           <Section title="Language">
             <select
               value={language}
@@ -466,71 +523,13 @@ export default function App() {
                 <VolumeX className="w-4 h-4" />
               )}
             </button>
-            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              Tap the mic to start recording. Tap again to stop and transcribe.
-            </p>
-          </Section>
-
-          <Section title="Memory & privacy">
-            <label className="flex items-start gap-2 cursor-pointer text-sm">
-              <input
-                type="checkbox"
-                checked={memoryConsent}
-                onChange={(e) => {
-                  setMemoryConsent(e.target.checked);
-                  if (e.target.checked) savePreferences();
-                  else clearMemory();
-                }}
-                className="mt-0.5"
-              />
-              <span>Remember my preferences</span>
-            </label>
-            {memoryStatus && (
-              <div className="mt-2 bg-teal-950/40 border border-teal-800 rounded-lg p-2 text-xs space-y-1">
-                <div className="flex items-center gap-1 text-teal-300">
-                  <Brain className="w-3 h-3" /> Memory active
-                </div>
-                <div className="text-slate-300">
-                  Language: <b>{langLabel(memoryStatus.preferred_language)}</b>
-                </div>
-                <div className="text-slate-300">
-                  Level: <b>{memoryStatus.explanation_level}</b>
-                </div>
-                <button
-                  onClick={clearMemory}
-                  className="mt-1 flex items-center gap-1 text-red-400 hover:text-red-300"
-                >
-                  <Trash2 className="w-3 h-3" /> Clear
-                </button>
-              </div>
-            )}
-          </Section>
-
-          <Section title="Example questions">
-            <div className="space-y-2">
-              {EXAMPLE_PROMPTS.map((p, i) => (
-                <button
-                  key={i}
-                  onClick={() => {
-                    setMessage(p.text);
-                    setSidebarOpen(false);
-                  }}
-                  className="w-full text-left text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg p-2 transition"
-                >
-                  <span className="mr-1">{p.icon}</span>
-                  <span className={/[\u0B80-\u0BFF]/.test(p.label) ? "tamil" : ""}>
-                    {p.label}
-                  </span>
-                </button>
-              ))}
-            </div>
           </Section>
 
           <Section title="About">
             <p className="text-xs text-slate-400 leading-relaxed">
-              PolyCyGot reasons across languages, remembers your preferences,
-              and verifies its own advice before showing it. Built for the
-              Omega AI Agents — Agent Without Borders track.
+              PolyCyGot reasons across languages, remembers your chat history
+              locally, and verifies its own advice before showing it. Built for
+              the Omega AI Agents — Agent Without Borders track.
             </p>
           </Section>
         </aside>
@@ -539,14 +538,7 @@ export default function App() {
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4 md:p-6">
             <div className="max-w-3xl mx-auto space-y-4">
-              {messages.length === 0 && !loading && (
-                <EmptyState
-                  onSelect={(text) => {
-                    setMessage(text);
-                    setTimeout(() => sendMessage(text), 0);
-                  }}
-                />
-              )}
+              {messages.length === 0 && !loading && <EmptyState />}
 
               {messages.map((item, index) => (
                 <div key={index} className="fade-in">
@@ -577,9 +569,8 @@ export default function App() {
           </div>
 
           {/* Input area */}
-          <div className="border-t border-slate-800 bg-slate-900/60 backdrop-blur p-3 md:p-4">
+          <div className="border-t border-slate-800/80 bg-slate-900/60 backdrop-blur p-3 md:p-4">
             <div className="max-w-3xl mx-auto">
-              {/* Image preview bar */}
               {imagePreview && (
                 <div className="mb-3 flex items-center gap-3 bg-slate-800 border border-teal-700 rounded-xl p-2">
                   <img
@@ -606,7 +597,6 @@ export default function App() {
                   <button
                     onClick={clearImage}
                     className="text-slate-500 hover:text-slate-300"
-                    title="Remove image"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -614,7 +604,6 @@ export default function App() {
               )}
 
               <div className="flex gap-2 items-center">
-                {/* Image upload */}
                 <input
                   type="file"
                   accept="image/*"
@@ -630,7 +619,6 @@ export default function App() {
                   <ImageIcon className="w-5 h-5" />
                 </button>
 
-                {/* Mic */}
                 <button
                   onClick={isRecording ? stopRecording : startRecording}
                   className={`p-3 rounded-xl transition ${
@@ -643,7 +631,6 @@ export default function App() {
                   <Mic className="w-5 h-5" />
                 </button>
 
-                {/* Text input */}
                 <input
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
@@ -661,7 +648,6 @@ export default function App() {
                   className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-teal-600 text-sm"
                 />
 
-                {/* Speaker toggle */}
                 <button
                   onClick={() => setVoiceOutput((v) => !v)}
                   className={`p-3 rounded-xl transition ${
@@ -678,7 +664,6 @@ export default function App() {
                   )}
                 </button>
 
-                {/* Send */}
                 <button
                   onClick={() => sendMessage()}
                   disabled={loading || !message.trim()}
@@ -711,7 +696,7 @@ function UserBubble({ text, image }) {
   return (
     <div className="flex justify-end">
       <div
-        className={`max-w-[85%] md:max-w-[75%] bg-teal-700/30 border border-teal-800 rounded-2xl rounded-tr-sm px-4 py-3 ${
+        className={`max-w-[85%] md:max-w-[75%] bg-teal-700/40 border border-teal-800 rounded-2xl rounded-tr-sm px-4 py-3 ${
           /[\u0B80-\u0BFF]/.test(text) ? "tamil" : ""
         }`}
       >
@@ -744,7 +729,7 @@ function AgentBubble({
   const isTamil = /[\u0B80-\u0BFF]/.test(item.text);
   return (
     <div className="flex justify-start">
-      <div className="max-w-[90%] md:max-w-[85%] bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 space-y-3 w-full md:w-auto">
+      <div className="max-w-[90%] md:max-w-[85%] bg-slate-900/85 backdrop-blur border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 space-y-3 w-full md:w-auto">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Shield className="w-4 h-4 text-teal-400" />
@@ -831,9 +816,7 @@ function AgentBubble({
                       <X className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
                     )}
                     <span
-                      className={
-                        check.passed ? "text-slate-300" : "text-red-300"
-                      }
+                      className={check.passed ? "text-slate-300" : "text-red-300"}
                     >
                       {check.rule}
                     </span>
@@ -864,7 +847,7 @@ function AgentBubble({
 function TypingIndicator() {
   return (
     <div className="flex justify-start">
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
+      <div className="bg-slate-900/85 backdrop-blur border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 flex items-center gap-2">
         <Shield className="w-4 h-4 text-teal-400" />
         <span className="text-sm text-slate-400">PolyCyGot is reasoning</span>
         <div className="flex gap-1 ml-1">
@@ -877,50 +860,21 @@ function TypingIndicator() {
   );
 }
 
-function EmptyState({ onSelect }) {
+function EmptyState() {
   return (
-    <div className="text-center py-10 md:py-16">
-      <div className="w-16 h-16 mx-auto rounded-2xl bg-teal-600/20 border border-teal-700 flex items-center justify-center mb-4">
-        <Shield className="w-8 h-8 text-teal-400" />
+    <div className="text-center py-16 md:py-24">
+      <div className="w-20 h-20 mx-auto rounded-2xl bg-teal-600/20 border border-teal-700 flex items-center justify-center mb-5">
+        <Shield className="w-10 h-10 text-teal-400" />
       </div>
-      <h2 className="text-xl md:text-2xl font-bold">
+      <h2 className="text-2xl md:text-3xl font-bold">
         Ask PolyCyGot about anything suspicious
       </h2>
-      <p className="text-slate-400 text-sm mt-2 max-w-md mx-auto">
-        In English or Tamil. Type, speak, or upload a screenshot. About a
-        suspicious SMS, an OTP request, a link, or general cybersecurity
-        questions.
+      <p className="text-slate-400 text-sm mt-3 max-w-md mx-auto">
+        In English or Tamil. Type, speak, or upload a screenshot.
       </p>
-
-      <div className="grid md:grid-cols-2 gap-3 max-w-2xl mx-auto mt-8">
-        {EXAMPLE_PROMPTS.slice(0, 4).map((p, i) => (
-          <button
-            key={i}
-            onClick={() => onSelect(p.text)}
-            className="text-left bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-teal-800 rounded-xl p-3 transition"
-          >
-            <div className="text-2xl mb-1">{p.icon}</div>
-            <div
-              className={`text-sm font-semibold ${
-                /[\u0B80-\u0BFF]/.test(p.label) ? "tamil" : ""
-              }`}
-            >
-              {p.label}
-            </div>
-            <div
-              className={`text-xs text-slate-400 mt-1 line-clamp-2 ${
-                /[\u0B80-\u0BFF]/.test(p.text) ? "tamil" : ""
-              }`}
-            >
-              {p.text}
-            </div>
-          </button>
-        ))}
-      </div>
-
-      <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mt-8">
+      <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mt-10">
         <Sparkles className="w-3 h-3" />
-        Voice, image, memory, verification, and Tamil support are all live.
+        Voice, image, chat history, and verification are all live.
       </div>
     </div>
   );
