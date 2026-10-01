@@ -19,7 +19,6 @@ body {
   font-family: var(--font-tamil);
 }
 
-/* Typing dots animation */
 @keyframes blink {
   0%, 80%, 100% { opacity: 0.2; }
   40% { opacity: 1; }
@@ -31,7 +30,6 @@ body {
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 
-/* Fade-in for new messages */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -40,7 +38,6 @@ body {
   animation: fadeIn 0.3s ease-out;
 }
 
-/* App background with dark overlay */
 .app-background {
   background-image: linear-gradient(rgba(2, 6, 23, 0.75), rgba(2, 6, 23, 0.88)),
     url("/background.jpeg");

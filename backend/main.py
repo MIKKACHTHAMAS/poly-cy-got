@@ -11,14 +11,22 @@ from database import init_db, get_preferences, save_preferences, delete_preferen
 
 app = FastAPI(title="PolyCyGot API")
 
-# CORS for frontend
+# CORS — must be before all routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Request schemas
+# ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     message: str
@@ -27,19 +35,35 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     memory_consent: bool = False
 
+
 class MemoryRequest(BaseModel):
     user_id: str
     preferred_language: str = "en-IN"
     explanation_level: str = "simple"
     memory_consent: bool = False
 
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
 @app.on_event("startup")
 def startup():
     init_db()
 
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
 @app.get("/")
 def home():
     return {"message": "PolyCyGot API is running"}
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -73,10 +97,16 @@ async def chat(request: ChatRequest):
 
     return result
 
+
+# ---------------------------------------------------------------------------
+# Memory
+# ---------------------------------------------------------------------------
+
 @app.get("/memory/{user_id}")
 def get_memory(user_id: str):
     prefs = get_preferences(user_id)
     return {"preferences": prefs}
+
 
 @app.post("/memory")
 def save_memory(request: MemoryRequest):
@@ -88,14 +118,20 @@ def save_memory(request: MemoryRequest):
     )
     return {"status": "saved"}
 
+
 @app.delete("/memory/{user_id}")
 def delete_memory(user_id: str):
     delete_preferences(user_id)
     return {"status": "deleted"}
 
+
+# ---------------------------------------------------------------------------
+# Voice input — transcribe audio (Gemini multimodal with fallback)
+# ---------------------------------------------------------------------------
+
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)):
-    """Convert speech audio to text using Gemini 3.5 Flash-Lite (multimodal)."""
+    """Transcribe speech to text using Gemini with model fallback."""
     audio_bytes = await audio.read()
     gemini_key = os.getenv("GEMINI_API_KEY")
 
@@ -104,76 +140,104 @@ async def transcribe(audio: UploadFile = File(...)):
 
     try:
         audio_b64 = base64.b64encode(audio_bytes).decode()
+        mime = audio.content_type or "audio/wav"
+
+        models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
 
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                # Changed model to gemini-3.5-flash-lite
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={gemini_key}",
-                json={
-                    "contents": [{
-                        "parts": [
-                            {"text": (
-                                "Transcribe this audio exactly as spoken. "
-                                "Return ONLY the transcribed text — no commentary, "
-                                "no translation, no formatting. If the audio is in "
-                                "Tamil, return Tamil text. If English, return English."
-                            )},
-                            {
-                                "inline_data": {
-                                    "mime_type": "audio/wav",
-                                    "data": audio_b64
-                                }
-                            }
-                        ]
-                    }]
-                }
-            )
+            for model in models:
+                try:
+                    resp = await client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}",
+                        json={
+                            "contents": [{
+                                "parts": [
+                                    {"text": (
+                                        "Transcribe this audio exactly as spoken. "
+                                        "Return ONLY the transcribed text — no commentary, "
+                                        "no translation, no formatting. If the audio is in "
+                                        "Tamil, return Tamil text. If English, return English."
+                                    )},
+                                    {"inline_data": {"mime_type": mime, "data": audio_b64}}
+                                ]
+                            }]
+                        }
+                    )
 
-            if resp.status_code != 200:
-                print(f"[TRANSCRIBE ERROR] {resp.status_code}: {resp.text[:400]}")
-                return {"text": "", "error": resp.text[:400]}
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        try:
+                            transcript = result["candidates"][0]["content"]["parts"][0]["text"]
+                            if transcript:
+                                return {"text": transcript.strip()}
+                        except (KeyError, IndexError):
+                            pass
 
-            result = resp.json()
-            try:
-                transcript = result["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError) as e:
-                print(f"[TRANSCRIBE PARSE ERROR] {e}: {result}")
-                transcript = ""
+                    if resp.status_code in (503, 404):
+                        print(f"[TRANSCRIBE] {model} unavailable ({resp.status_code}), trying next")
+                        continue
 
-            return {"text": transcript.strip()}
+                    print(f"[TRANSCRIBE ERROR] {model}: {resp.status_code}")
+                    break
+
+                except Exception as e:
+                    print(f"[TRANSCRIBE EXCEPTION] {model}: {e}")
+                    continue
+
+        return {"text": "", "error": "Transcription temporarily unavailable"}
 
     except Exception as e:
         print(f"[TRANSCRIBE EXCEPTION] {type(e).__name__}: {e}")
         return {"text": "", "error": str(e)}
 
+
+# ---------------------------------------------------------------------------
+# Voice output — text to speech (Sarvam Bulbul v3)
+# ---------------------------------------------------------------------------
+
 @app.post("/speak")
 async def speak(text: str, language: str = "ta-IN"):
-    """Convert text to speech audio using Sarvam AI Bulbul v3."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            "https://api.sarvam.ai/text-to-speech",
-            json={
-                "inputs": [text],
-                "target_language_code": language,
-                "speaker": "priya",       # Updated to a v3 speaker
-                "model": "bulbul:v3"      # Updated from bulbul:v2
-            },
-            headers={"api-subscription-key": os.getenv("SARVAM_API_KEY")}
-        )
-        if resp.status_code != 200:
-            print(f"[SPEAK ERROR] {resp.status_code}: {resp.text[:400]}")
-            return {"audio": None, "error": resp.text}
-        data = resp.json()
-        audios = data.get("audios", [])
-        return {"audio": audios[0] if audios else None}
+    """Convert text to speech using Sarvam Bulbul v3."""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "https://api.sarvam.ai/text-to-speech",
+                json={
+                    "inputs": [text],
+                    "target_language_code": language,
+                    "speaker": "priya",
+                    "model": "bulbul:v3"
+                },
+                headers={"api-subscription-key": os.getenv("SARVAM_API_KEY")}
+            )
+            if resp.status_code != 200:
+                print(f"[SPEAK ERROR] {resp.status_code}: {resp.text[:400]}")
+                return {"audio": None, "error": resp.text[:200]}
+            data = resp.json()
+            audios = data.get("audios", [])
+            return {"audio": audios[0] if audios else None}
+    except Exception as e:
+        print(f"[SPEAK EXCEPTION] {type(e).__name__}: {e}")
+        return {"audio": None, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Image analysis — screenshot phishing detection (Gemini with fallback)
+# ---------------------------------------------------------------------------
 
 @app.post("/analyze-image")
 async def analyze_image(image: UploadFile = File(...)):
-    """Analyze a screenshot for phishing/scam indicators using Gemini 3.8 Flash."""
+    """Analyze a screenshot for phishing/scam indicators with model fallback."""
     image_bytes = await image.read()
     gemini_key = os.getenv("GEMINI_API_KEY")
+
     if not gemini_key:
-        return {"text": "", "error": "GEMINI_API_KEY not set"}
+        return {
+            "text": (
+                "The image analyzer is not configured. "
+                "Please contact the administrator."
+            )
+        }
 
     try:
         image_b64 = base64.b64encode(image_bytes).decode()
@@ -191,36 +255,56 @@ Keep the reply under 6 sentences. Speak directly to the user in second person.
 Never tell the user to share OTP, passwords, or click unknown links.
 Always recommend verifying through official channels."""
 
+        models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
+
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={gemini_key}",
-                json={
-                    "contents": [{
-                        "parts": [
-                            {"text": prompt},
-                            {
-                                "inline_data": {
-                                    "mime_type": mime,
-                                    "data": image_b64
-                                }
-                            }
-                        ]
-                    }]
-                }
+            for model in models:
+                try:
+                    resp = await client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}",
+                        json={
+                            "contents": [{
+                                "parts": [
+                                    {"text": prompt},
+                                    {"inline_data": {"mime_type": mime, "data": image_b64}}
+                                ]
+                            }]
+                        }
+                    )
+
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        try:
+                            reply = result["candidates"][0]["content"]["parts"][0]["text"]
+                            if reply:
+                                return {"text": reply.strip()}
+                        except (KeyError, IndexError):
+                            pass
+
+                    if resp.status_code in (503, 404):
+                        print(f"[IMAGE] {model} unavailable ({resp.status_code}), trying next")
+                        continue
+
+                    print(f"[IMAGE ERROR] {model}: {resp.status_code} {resp.text[:200]}")
+                    break
+
+                except Exception as e:
+                    print(f"[IMAGE EXCEPTION] {model}: {e}")
+                    continue
+
+        return {
+            "text": (
+                "I'm having trouble analyzing images right now — the AI model "
+                "is experiencing high demand. Please try again in a moment, "
+                "or describe the suspicious message as text instead."
             )
-
-            if resp.status_code != 200:
-                print(f"[IMAGE ERROR] {resp.status_code}: {resp.text[:400]}")
-                return {"text": "", "error": resp.text[:400]}
-
-            result = resp.json()
-            try:
-                reply = result["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError):
-                reply = ""
-
-            return {"text": reply.strip()}
+        }
 
     except Exception as e:
         print(f"[IMAGE EXCEPTION] {type(e).__name__}: {e}")
-        return {"text": "", "error": str(e)}
+        return {
+            "text": (
+                "Something went wrong while processing the image. "
+                "Please try again, or describe the message as text."
+            )
+        }

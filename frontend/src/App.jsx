@@ -7,7 +7,6 @@ import {
 
 const API_URL = "http://127.0.0.1:8000";
 
-// ---------- Chat history storage ----------
 const HISTORY_KEY = "polycygot_history";
 
 function loadHistory() {
@@ -19,14 +18,24 @@ function loadHistory() {
 }
 
 function saveHistory(list) {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  } catch (err) {
+    console.warn("localStorage save failed:", err);
+    // Try clearing and saving a minimal version
+    try {
+      localStorage.removeItem(HISTORY_KEY);
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 5)));
+    } catch {
+      // Give up silently
+    }
+  }
 }
 
 function newSessionId() {
   return "session_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
 }
 
-// ---------- Helper: convert audioBuffer to WAV ----------
 function audioBufferToWav(audioBuffer) {
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
@@ -76,18 +85,15 @@ export default function App() {
   const [copiedIndex, setCopiedIndex] = useState(null);
   const messagesEndRef = useRef(null);
 
-  // Session + history
   const [sessionId, setSessionId] = useState(() => newSessionId());
   const [history, setHistory] = useState(() => loadHistory());
   const [activeHistoryId, setActiveHistoryId] = useState(null);
 
-  // Voice state
   const [isRecording, setIsRecording] = useState(false);
   const [voiceOutput, setVoiceOutput] = useState(false);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  // Image state
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
   const [imageWarning, setImageWarning] = useState(false);
@@ -97,11 +103,23 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Auto-save current session into history
+    // Auto-save current session into history
   useEffect(() => {
     if (messages.length === 0) return;
 
-    const firstUser = messages.find((m) => m.role === "user");
+    // Strip images from messages before saving — base64 images blow
+    // past localStorage's ~5MB quota almost immediately.
+    const stripImages = (list) =>
+      list.map((m) => {
+        if (m.image) {
+          const { image, ...rest } = m;
+          return { ...rest, text: rest.text || "[Screenshot attached]" };
+        }
+        return m;
+      });
+
+    const safeMessages = stripImages(messages);
+    const firstUser = safeMessages.find((m) => m.role === "user");
     const title = (firstUser?.text || "New chat").slice(0, 40);
 
     const now = Date.now();
@@ -113,22 +131,35 @@ export default function App() {
       updated[existingIndex] = {
         ...updated[existingIndex],
         title,
-        messages,
+        messages: safeMessages,
         updatedAt: now,
       };
     } else {
       updated = [
-        { id: sessionId, title, messages, createdAt: now, updatedAt: now },
+        { id: sessionId, title, messages: safeMessages, createdAt: now, updatedAt: now },
         ...history,
       ];
     }
 
-    updated = updated.slice(0, 20);
-    setHistory(updated);
-    saveHistory(updated);
-  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Keep only 10 recent chats to stay well under quota
+    updated = updated.slice(0, 10);
 
-  // ---------- Voice input ----------
+    // Wrap in try/catch so quota errors never crash the UI
+    try {
+      setHistory(updated);
+      saveHistory(updated);
+    } catch (err) {
+      console.warn("History save skipped (storage full):", err);
+      // If storage is still full, drop the oldest sessions and retry
+      try {
+        const trimmed = updated.slice(0, 5);
+        setHistory(trimmed);
+        saveHistory(trimmed);
+      } catch {
+        // Give up silently — better than crashing the app
+      }
+    }
+  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -158,8 +189,9 @@ export default function App() {
             body: formData,
           });
           const data = await resp.json();
-          if (data.text) setMessage(data.text);
-          else console.warn("Transcription empty:", data);
+          if (data.text && data.text.trim()) {
+            setMessage(data.text.trim());
+          }
         } catch (err) {
           console.error("Transcription failed:", err);
         }
@@ -180,7 +212,6 @@ export default function App() {
     }
   }
 
-  // ---------- Voice output ----------
   async function speakReply(text, lang) {
     try {
       const resp = await fetch(
@@ -197,7 +228,6 @@ export default function App() {
     }
   }
 
-  // ---------- Image input ----------
   function handleImageSelect(e) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -253,36 +283,50 @@ export default function App() {
         method: "POST",
         body: formData,
       });
+
+      if (!resp.ok) {
+        throw new Error(`Request failed: ${resp.status}`);
+      }
+
       const data = await resp.json();
+
+      let replyText = "I couldn't analyze that image. Please try again.";
+      if (typeof data?.text === "string" && data.text.trim()) {
+        replyText = data.text.trim();
+      }
 
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: data.text || data.error || "Could not analyze the image.",
+          text: replyText,
           detectedLang: "en-IN",
           verification: {
             status: "passed",
-            checks: [{ rule: "Image analyzed by multimodal model", passed: true }],
+            checks: [
+              { rule: "Image analyzed by multimodal model", passed: true },
+            ],
             blocked_phrases: [],
           },
         },
       ]);
 
-      if (voiceOutput && data.text) speakReply(data.text, "en-IN");
+      if (voiceOutput && replyText) speakReply(replyText, "en-IN");
       clearImage();
     } catch (err) {
       console.error("Image analysis failed:", err);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: "Unable to analyze the image." },
+        {
+          role: "assistant",
+          text: "Unable to analyze the image. Please try again.",
+        },
       ]);
     } finally {
       setLoading(false);
     }
   }
 
-  // ---------- Send text message ----------
   async function sendMessage(customText) {
     const text = (customText ?? message).trim();
     if (!text || loading) return;
@@ -307,20 +351,25 @@ export default function App() {
       if (!response.ok) throw new Error("Request failed");
       const data = await response.json();
 
+      const replyText =
+        typeof data?.reply === "string" && data.reply.trim()
+          ? data.reply
+          : "I couldn't generate a response. Please try again.";
+
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: data.reply,
-          indicators: data.risk_indicators,
-          verification: data.verification,
-          detectedLang: data.detected_language,
-          needsFollowup: data.needs_followup,
+          text: replyText,
+          indicators: data.risk_indicators || [],
+          verification: data.verification || null,
+          detectedLang: data.detected_language || "en-IN",
+          needsFollowup: data.needs_followup || false,
         },
       ]);
 
-      if (voiceOutput && data.reply) {
-        speakReply(data.reply, data.detected_language || "en-IN");
+      if (voiceOutput && replyText) {
+        speakReply(replyText, data.detected_language || "en-IN");
       }
     } catch {
       setMessages((prev) => [
@@ -335,7 +384,6 @@ export default function App() {
     }
   }
 
-  // ---------- Chat history actions ----------
   function startNewChat() {
     setSessionId(newSessionId());
     setMessages([]);
@@ -356,9 +404,7 @@ export default function App() {
     const updated = history.filter((h) => h.id !== id);
     setHistory(updated);
     saveHistory(updated);
-    if (activeHistoryId === id) {
-      startNewChat();
-    }
+    if (activeHistoryId === id) startNewChat();
   }
 
   function clearAllHistory() {
@@ -397,7 +443,6 @@ export default function App() {
 
   return (
     <div className="app-background min-h-screen text-slate-100 flex flex-col">
-      {/* Header */}
       <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur sticky top-0 z-20">
         <div className="px-4 md:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -429,7 +474,6 @@ export default function App() {
       </header>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* Sidebar */}
         <aside
           className={`${
             sidebarOpen ? "block" : "hidden"
@@ -534,7 +578,6 @@ export default function App() {
           </Section>
         </aside>
 
-        {/* Chat area */}
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4 md:p-6">
             <div className="max-w-3xl mx-auto space-y-4">
@@ -568,7 +611,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Input area */}
           <div className="border-t border-slate-800/80 bg-slate-900/60 backdrop-blur p-3 md:p-4">
             <div className="max-w-3xl mx-auto">
               {imagePreview && (
@@ -693,11 +735,12 @@ function Section({ title, children }) {
 }
 
 function UserBubble({ text, image }) {
+  const isTamil = /[\u0B80-\u0BFF]/.test(text || "");
   return (
     <div className="flex justify-end">
       <div
         className={`max-w-[85%] md:max-w-[75%] bg-teal-700/40 border border-teal-800 rounded-2xl rounded-tr-sm px-4 py-3 ${
-          /[\u0B80-\u0BFF]/.test(text) ? "tamil" : ""
+          isTamil ? "tamil" : ""
         }`}
       >
         <div className="text-xs text-teal-400 font-semibold mb-1">You</div>
@@ -726,7 +769,9 @@ function AgentBubble({
   langLabel,
   onSpeak,
 }) {
-  const isTamil = /[\u0B80-\u0BFF]/.test(item.text);
+  const safeText = typeof item.text === "string" ? item.text : "";
+  const isTamil = /[\u0B80-\u0BFF]/.test(safeText);
+
   return (
     <div className="flex justify-start">
       <div className="max-w-[90%] md:max-w-[85%] bg-slate-900/85 backdrop-blur border border-slate-800 rounded-2xl rounded-tl-sm px-4 py-3 space-y-3 w-full md:w-auto">
@@ -764,7 +809,7 @@ function AgentBubble({
         </div>
 
         <p className={`whitespace-pre-wrap text-sm ${isTamil ? "tamil" : ""}`}>
-          {item.text}
+          {safeText}
         </p>
 
         {item.indicators?.length > 0 && (
