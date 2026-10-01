@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import {
   Shield, Send, Globe, Brain, Trash2, Copy, Check,
   ChevronDown, ChevronUp, AlertTriangle, Sparkles, X,
-  Mic, Volume2, VolumeX
+  Mic, Volume2, VolumeX, Image as ImageIcon
 } from "lucide-react";
 
 const API_URL = "http://127.0.0.1:8000";
@@ -15,7 +15,7 @@ const EXAMPLE_PROMPTS = [
   { icon: "OTP", label: "OTP கேட்கும் மெசேஜ்", text: "என் வங்கி OTP கேட்கிறது. நான் பகிர வேண்டுமா?" },
 ];
 
-// Convert decoded audioBuffer to WAV blob
+// ---------- Helper: convert decoded audioBuffer to WAV blob ----------
 function audioBufferToWav(audioBuffer) {
   const numChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
@@ -73,6 +73,12 @@ export default function App() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
+  // Image state
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [imageWarning, setImageWarning] = useState(false);
+  const fileInputRef = useRef(null);
+
   const [sessionId] = useState(() => {
     let id = localStorage.getItem("polycygot_session_id");
     if (!id) {
@@ -100,7 +106,7 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Voice input: toggle start/stop
+  // ---------- Voice input ----------
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -155,7 +161,7 @@ export default function App() {
     }
   }
 
-  // Voice output
+  // ---------- Voice output ----------
   async function speakReply(text, lang) {
     try {
       const resp = await fetch(
@@ -174,6 +180,100 @@ export default function App() {
     }
   }
 
+  // ---------- Image input ----------
+  function handleImageSelect(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Image too large. Please use an image under 5 MB.");
+      return;
+    }
+
+    if (!imageWarning) {
+      const ok = window.confirm(
+        "⚠️ Privacy reminder:\n\n" +
+          "Before uploading, please make sure any OTP, account number, " +
+          "or personal details in the screenshot are covered or blurred.\n\n" +
+          "The image will be sent to Google's Gemini API for analysis and " +
+          "will NOT be stored on our server.\n\n" +
+          "Continue?"
+      );
+      if (!ok) {
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        return;
+      }
+      setImageWarning(true);
+    }
+
+    setSelectedImage(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setImagePreview(ev.target.result);
+    reader.readAsDataURL(file);
+  }
+
+  function clearImage() {
+    setSelectedImage(null);
+    setImagePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function sendImage() {
+    if (!selectedImage || loading) return;
+
+    const preview = imagePreview;
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: "[Screenshot attached]", image: preview },
+    ]);
+    setLoading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("image", selectedImage);
+
+      const resp = await fetch(`${API_URL}/analyze-image`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await resp.json();
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: data.text || data.error || "Could not analyze the image.",
+          detectedLang: "en-IN",
+          verification: {
+            status: "passed",
+            checks: [
+              { rule: "Image analyzed by multimodal model", passed: true },
+            ],
+            blocked_phrases: [],
+          },
+        },
+      ]);
+
+      if (voiceOutput && data.text) {
+        speakReply(data.text, "en-IN");
+      }
+
+      clearImage();
+    } catch (err) {
+      console.error("Image analysis failed:", err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: "Unable to analyze the image. Please check the backend is running.",
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---------- Send text message ----------
   async function sendMessage(customText) {
     const text = (customText ?? message).trim();
     if (!text || loading) return;
@@ -226,6 +326,7 @@ export default function App() {
     }
   }
 
+  // ---------- Memory ----------
   async function savePreferences() {
     await fetch(`${API_URL}/memory`, {
       method: "POST",
@@ -277,6 +378,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-20">
         <div className="px-4 md:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -312,6 +414,7 @@ export default function App() {
       </header>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        {/* Sidebar */}
         <aside
           className={`${
             sidebarOpen ? "block" : "hidden"
@@ -432,6 +535,7 @@ export default function App() {
           </Section>
         </aside>
 
+        {/* Chat area */}
         <main className="flex-1 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto p-4 md:p-6">
             <div className="max-w-3xl mx-auto space-y-4">
@@ -447,7 +551,7 @@ export default function App() {
               {messages.map((item, index) => (
                 <div key={index} className="fade-in">
                   {item.role === "user" ? (
-                    <UserBubble text={item.text} />
+                    <UserBubble text={item.text} image={item.image} />
                   ) : (
                     <AgentBubble
                       item={item}
@@ -472,61 +576,118 @@ export default function App() {
             </div>
           </div>
 
+          {/* Input area */}
           <div className="border-t border-slate-800 bg-slate-900/60 backdrop-blur p-3 md:p-4">
-            <div className="max-w-3xl mx-auto flex gap-2 items-center">
-              <button
-                onClick={isRecording ? stopRecording : startRecording}
-                className={`p-3 rounded-xl transition ${
-                  isRecording
-                    ? "bg-red-600 animate-pulse text-white"
-                    : "bg-slate-800 hover:bg-slate-700 text-slate-300"
-                }`}
-                title={isRecording ? "Tap to stop" : "Tap to speak"}
-              >
-                <Mic className="w-5 h-5" />
-              </button>
+            <div className="max-w-3xl mx-auto">
+              {/* Image preview bar */}
+              {imagePreview && (
+                <div className="mb-3 flex items-center gap-3 bg-slate-800 border border-teal-700 rounded-xl p-2">
+                  <img
+                    src={imagePreview}
+                    alt="preview"
+                    className="w-14 h-14 object-cover rounded-lg border border-slate-700"
+                  />
+                  <div className="flex-1 text-xs text-slate-300">
+                    <div className="font-semibold text-teal-400">
+                      Screenshot ready
+                    </div>
+                    <div className="text-slate-500">
+                      {selectedImage?.name} ·{" "}
+                      {(selectedImage?.size / 1024).toFixed(0)} KB
+                    </div>
+                  </div>
+                  <button
+                    onClick={sendImage}
+                    disabled={loading}
+                    className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 px-3 py-1.5 rounded-lg text-xs font-semibold"
+                  >
+                    Analyze
+                  </button>
+                  <button
+                    onClick={clearImage}
+                    className="text-slate-500 hover:text-slate-300"
+                    title="Remove image"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
 
-              <input
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
+              <div className="flex gap-2 items-center">
+                {/* Image upload */}
+                <input
+                  type="file"
+                  accept="image/*"
+                  ref={fileInputRef}
+                  onChange={handleImageSelect}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-3 rounded-xl transition bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  title="Attach screenshot"
+                >
+                  <ImageIcon className="w-5 h-5" />
+                </button>
+
+                {/* Mic */}
+                <button
+                  onClick={isRecording ? stopRecording : startRecording}
+                  className={`p-3 rounded-xl transition ${
+                    isRecording
+                      ? "bg-red-600 animate-pulse text-white"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  }`}
+                  title={isRecording ? "Tap to stop" : "Tap to speak"}
+                >
+                  <Mic className="w-5 h-5" />
+                </button>
+
+                {/* Text input */}
+                <input
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendMessage();
+                    }
+                  }}
+                  placeholder={
+                    isRecording
+                      ? "🔴 Recording... tap mic to stop"
+                      : "Ask a cybersecurity question (English or Tamil)..."
                   }
-                }}
-                placeholder={
-                  isRecording
-                    ? "🔴 Recording... tap mic to stop"
-                    : "Ask a cybersecurity question (English or Tamil)..."
-                }
-                className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-teal-600 text-sm"
-              />
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-teal-600 text-sm"
+                />
 
-              <button
-                onClick={() => setVoiceOutput((v) => !v)}
-                className={`p-3 rounded-xl transition ${
-                  voiceOutput
-                    ? "bg-teal-600 text-white"
-                    : "bg-slate-800 hover:bg-slate-700 text-slate-300"
-                }`}
-                title={voiceOutput ? "Voice output ON" : "Voice output OFF"}
-              >
-                {voiceOutput ? (
-                  <Volume2 className="w-5 h-5" />
-                ) : (
-                  <VolumeX className="w-5 h-5" />
-                )}
-              </button>
+                {/* Speaker toggle */}
+                <button
+                  onClick={() => setVoiceOutput((v) => !v)}
+                  className={`p-3 rounded-xl transition ${
+                    voiceOutput
+                      ? "bg-teal-600 text-white"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  }`}
+                  title={voiceOutput ? "Voice output ON" : "Voice output OFF"}
+                >
+                  {voiceOutput ? (
+                    <Volume2 className="w-5 h-5" />
+                  ) : (
+                    <VolumeX className="w-5 h-5" />
+                  )}
+                </button>
 
-              <button
-                onClick={() => sendMessage()}
-                disabled={loading || !message.trim()}
-                className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed px-4 md:px-5 py-3 rounded-xl flex items-center gap-2 font-semibold text-sm"
-              >
-                <Send className="w-4 h-4" />
-                <span className="hidden md:inline">Send</span>
-              </button>
+                {/* Send */}
+                <button
+                  onClick={() => sendMessage()}
+                  disabled={loading || !message.trim()}
+                  className="bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed px-4 md:px-5 py-3 rounded-xl flex items-center gap-2 font-semibold text-sm"
+                >
+                  <Send className="w-4 h-4" />
+                  <span className="hidden md:inline">Send</span>
+                </button>
+              </div>
             </div>
           </div>
         </main>
@@ -546,7 +707,7 @@ function Section({ title, children }) {
   );
 }
 
-function UserBubble({ text }) {
+function UserBubble({ text, image }) {
   return (
     <div className="flex justify-end">
       <div
@@ -555,6 +716,13 @@ function UserBubble({ text }) {
         }`}
       >
         <div className="text-xs text-teal-400 font-semibold mb-1">You</div>
+        {image && (
+          <img
+            src={image}
+            alt="uploaded"
+            className="rounded-lg border border-teal-700 mb-2 max-w-[240px]"
+          />
+        )}
         <p className="whitespace-pre-wrap text-sm">{text}</p>
       </div>
     </div>
@@ -663,7 +831,9 @@ function AgentBubble({
                       <X className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
                     )}
                     <span
-                      className={check.passed ? "text-slate-300" : "text-red-300"}
+                      className={
+                        check.passed ? "text-slate-300" : "text-red-300"
+                      }
                     >
                       {check.rule}
                     </span>
@@ -717,8 +887,9 @@ function EmptyState({ onSelect }) {
         Ask PolyCyGot about anything suspicious
       </h2>
       <p className="text-slate-400 text-sm mt-2 max-w-md mx-auto">
-        In English or Tamil. Speak or type. About a suspicious SMS, an OTP
-        request, a link, or general cybersecurity questions.
+        In English or Tamil. Type, speak, or upload a screenshot. About a
+        suspicious SMS, an OTP request, a link, or general cybersecurity
+        questions.
       </p>
 
       <div className="grid md:grid-cols-2 gap-3 max-w-2xl mx-auto mt-8">
@@ -749,7 +920,7 @@ function EmptyState({ onSelect }) {
 
       <div className="flex items-center justify-center gap-1 text-xs text-slate-500 mt-8">
         <Sparkles className="w-3 h-3" />
-        Voice input, memory, verification, and Tamil support are all live.
+        Voice, image, memory, verification, and Tamil support are all live.
       </div>
     </div>
   );

@@ -166,3 +166,61 @@ async def speak(text: str, language: str = "ta-IN"):
         data = resp.json()
         audios = data.get("audios", [])
         return {"audio": audios[0] if audios else None}
+
+@app.post("/analyze-image")
+async def analyze_image(image: UploadFile = File(...)):
+    """Analyze a screenshot for phishing/scam indicators using Gemini 3.8 Flash."""
+    image_bytes = await image.read()
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        return {"text": "", "error": "GEMINI_API_KEY not set"}
+
+    try:
+        image_b64 = base64.b64encode(image_bytes).decode()
+        mime = image.content_type or "image/png"
+
+        prompt = """You are PolyCyGot, a cybersecurity assistant.
+
+Analyze this image carefully. It may be a screenshot of an SMS, email, or message.
+If you see a suspicious message, identify the risk indicators and advise the user.
+If it's a normal image, say so briefly.
+If the image contains personal information (OTP, account number, phone number),
+warn the user to redact it before sharing.
+
+Keep the reply under 6 sentences. Speak directly to the user in second person.
+Never tell the user to share OTP, passwords, or click unknown links.
+Always recommend verifying through official channels."""
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={gemini_key}",
+                json={
+                    "contents": [{
+                        "parts": [
+                            {"text": prompt},
+                            {
+                                "inline_data": {
+                                    "mime_type": mime,
+                                    "data": image_b64
+                                }
+                            }
+                        ]
+                    }]
+                }
+            )
+
+            if resp.status_code != 200:
+                print(f"[IMAGE ERROR] {resp.status_code}: {resp.text[:400]}")
+                return {"text": "", "error": resp.text[:400]}
+
+            result = resp.json()
+            try:
+                reply = result["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError):
+                reply = ""
+
+            return {"text": reply.strip()}
+
+    except Exception as e:
+        print(f"[IMAGE EXCEPTION] {type(e).__name__}: {e}")
+        return {"text": "", "error": str(e)}
