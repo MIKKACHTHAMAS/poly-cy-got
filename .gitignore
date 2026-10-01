@@ -1,15 +1,25 @@
-# Environment variables — CRITICAL
-.env
-*.env
-!.env.example
-
 # Python
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
 venv/
-*.pyc
-polycygot.db
+
+# Environment
+.env
+.env.*
 
 # Node
 node_modules/
 dist/
-.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -1,6 +1,9 @@
 fastapi
-uvicorn
-httpx
+uvicorn[standard]
+pydantic
 python-dotenv
+httpx
 google-genai
-python-multipart
+hyperon
+pytest
+pytest-asyncio

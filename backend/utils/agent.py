@@ -1,5 +1,6 @@
-from language_layer import detect_language, translate_text, generate_reply
-from verifier import verify_recommendation
+from gemini.client import generate_reply
+from sarvam.client import detect_language, translate_text
+from verifier.verifier import verify_recommendation
 
 KEYWORDS = {
     "otp_request": ["otp", "one-time password", "verification code"],
